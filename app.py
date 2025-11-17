@@ -395,7 +395,7 @@ with st.sidebar:
         st.subheader("กรุณากรอกรหัสผ่าน")
         clear_password = st.text_input("รหัสผ่าน:", type="password", key="clear_pass")
         
-        if st.button("✅ ยืนยันการล้าง", key="confirm_clear"):
+        if st.button("✅ ยืนยัน", key="confirm_clear"):
             if clear_password == PASSWORD:
                 st.session_state.clear_authenticated = True
                 st.session_state.show_clear_password = False
