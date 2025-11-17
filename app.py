@@ -238,7 +238,7 @@ def save_phones_as_excel(df):
     ws.title = "เบอร์โทรทั้งหมด"
     
     # เขียนหัวข้อ
-    headers = ['เบอร์โทร', 'ตัวเลข 9 ตัวท้าย', 'ไฟล์ต้นทาง', 'วันที่บันทึก']
+    headers = ['เบอร์โทร']
     for col_idx, header in enumerate(headers, 1):
         ws.cell(row=1, column=col_idx, value=header)
         # ตั้งค่า style สำหรับหัวข้อ
