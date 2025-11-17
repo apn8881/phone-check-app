@@ -101,8 +101,6 @@ def save_phones_as_excel(df):
     # เขียนหัวข้อ
     for col_idx, col_name in enumerate(df.columns, 1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
-        if col_idx == 1:  # คอลัมน์ A
-            cell.number_format = '@'
     
     # เขียนข้อมูลแถวที่ 2 ขึ้นไป
     for row_idx, row_data in enumerate(df.values, 2):
@@ -111,11 +109,10 @@ def save_phones_as_excel(df):
             
             # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text
             if col_idx == 1:
-                cell.number_format = '@'  # Text format
                 if pd.notna(value) and value != '':
-                    # ใช้ apostrophe เพื่อบังคับให้ Excel เห็นเป็น text
-                    phone_str = str(value).strip()
-                    cell.value = "'" + phone_str  # เพิ่ม apostrophe หน้า
+                    # ตั้งค่าเป็น text format โดยไม่ใช้ apostrophe
+                    cell.value = str(value)
+                    cell.number_format = '@'  # Text format
                 else:
                     cell.value = ''
             else:
@@ -129,30 +126,6 @@ def save_phones_as_excel(df):
     ws.column_dimensions['A'].width = 20
     
     wb.save(output)
-    output.seek(0)
-    return output
-
-def save_phones_as_excel_simple(df):
-    """วิธีที่ง่ายกว่า: ใช้ pandas ExcelWriter"""
-    output = io.BytesIO()
-    
-    # สร้าง DataFrame ใหม่โดยแปลงคอลัมน์ A เป็น string พร้อม apostrophe
-    df_export = df.copy()
-    df_export['A'] = "'" + df_export['A'].astype(str)
-    
-    # ใช้ ExcelWriter
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False, sheet_name='เบอร์ไม่ซ้ำ')
-        
-        # ตั้ง format ให้คอลัมน์ A
-        workbook = writer.book
-        worksheet = writer.sheets['เบอร์ไม่ซ้ำ']
-        
-        # ตั้ง text format ให้คอลัมน์ A
-        for row in range(2, len(df_export) + 2):  # ข้ามหัวข้อ
-            cell = worksheet.cell(row=row, column=1)
-            cell.number_format = '@'
-    
     output.seek(0)
     return output
 
@@ -278,7 +251,7 @@ if uploaded_file is not None:
                         download_filename = f"{original_name}-Cut.xlsx"
                     
                     # บันทึกเป็น Excel
-                    output = save_phones_as_excel_simple(unique_df)
+                    output = save_phones_as_excel(unique_df)
                     
                     st.download_button(
                         label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
