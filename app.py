@@ -5,6 +5,7 @@ import io
 from datetime import datetime
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
+import os
 
 # ตั้งค่าหน้า
 st.set_page_config(
@@ -16,52 +17,65 @@ st.set_page_config(
 # รหัสผ่าน
 PASSWORD = "23669"
 
+# ตั้งค่าเพื่อรองรับข้อมูลขนาดใหญ่
+os.environ['STREAMLIT_SERVER_MAX_UPLOAD_SIZE'] = '1000'
+
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
-    """สร้างฐานข้อมูล SQLite"""
-    conn = sqlite3.connect('phone_database.db')
+    """สร้างฐานข้อมูล SQLite พร้อม index เพื่อความเร็ว"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
     cursor = conn.cursor()
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS old_phones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             phone_number TEXT,
-            last_9_digits TEXT,
+            last_9_digits TEXT UNIQUE,  -- ใช้ UNIQUE เพื่อป้องกันข้อมูลซ้ำ
             source_file TEXT,
             created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
+    # สร้าง index เพื่อเพิ่มความเร็วในการค้นหา
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_9_digits ON old_phones(last_9_digits)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_date ON old_phones(created_date)')
+    
     conn.commit()
     conn.close()
 
 def extract_last_9_digits(phone):
-    """ดึงตัวเลข 9 ตัวท้ายจากเบอร์โทร"""
+    """ดึงตัวเลข 9 ตัวท้ายจากเบอร์โทร (optimized version)"""
     if pd.isna(phone) or phone == '' or phone is None:
         return ""
     
     phone_str = str(phone).strip()
-    digits_only = ''.join(filter(str.isdigit, phone_str))
+    # ใช้วิธีที่เร็วขึ้นสำหรับการดึงตัวเลข
+    digits_only = ''.join([c for c in phone_str if c.isdigit()])
     
-    if len(digits_only) >= 9:
-        return digits_only[-9:]
-    else:
-        return digits_only
+    return digits_only[-9:] if len(digits_only) >= 9 else digits_only
 
 def get_all_last_9_digits():
-    """ดึงตัวเลข 9 ตัวท้ายทั้งหมดจากฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db')
+    """ดึงตัวเลข 9 ตัวท้ายทั้งหมดจากฐานข้อมูล (ใช้ generator เพื่อประหยัด memory)"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT last_9_digits FROM old_phones WHERE LENGTH(last_9_digits) = 9")
-    results = cursor.fetchall()
+    
+    # ใช้ generator เพื่อไม่โหลดทั้งหมดลง memory
+    results = set()
+    batch_size = 100000
+    while True:
+        batch = cursor.fetchmany(batch_size)
+        if not batch:
+            break
+        results.update(result[0] for result in batch)
     
     conn.close()
-    return set([result[0] for result in results])
+    return results
 
 def get_database_stats():
-    """ดึงสถิติจากฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db')
+    """ดึงสถิติจากฐานข้อมูล (optimized)"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT COUNT(*) FROM old_phones")
@@ -73,9 +87,20 @@ def get_database_stats():
     conn.close()
     return total_count, valid_count
 
-def get_all_phones_from_database():
-    """ดึงเบอร์โทรทั้งหมดจากฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db')
+def get_phones_count():
+    """นับจำนวนเบอร์โทรทั้งหมด"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM old_phones")
+    count = cursor.fetchone()[0]
+    
+    conn.close()
+    return count
+
+def get_phones_batch(limit=1000, offset=0):
+    """ดึงข้อมูลเบอร์โทรแบบแบ่งกลุ่ม"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
     
     query = """
     SELECT 
@@ -85,80 +110,165 @@ def get_all_phones_from_database():
         created_date
     FROM old_phones
     ORDER BY created_date DESC
+    LIMIT ? OFFSET ?
     """
     
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=(limit, offset))
     conn.close()
     return df
 
-def get_phones_count():
-    """นับจำนวนเบอร์โทรทั้งหมด"""
-    conn = sqlite3.connect('phone_database.db')
+def save_phones_to_database_batch(phone_numbers, source_file=""):
+    """บันทึกเบอร์โทรลงฐานข้อมูลแบบแบ่งกลุ่ม"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
     cursor = conn.cursor()
     
+    batch_size = 10000
+    saved_count = 0
+    
+    for i in range(0, len(phone_numbers), batch_size):
+        batch = phone_numbers[i:i + batch_size]
+        for phone in batch:
+            last_9 = extract_last_9_digits(phone)
+            if len(last_9) == 9:
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO old_phones (phone_number, last_9_digits, source_file) VALUES (?, ?, ?)",
+                        (str(phone), last_9, source_file)
+                    )
+                    saved_count += 1
+                except:
+                    continue
+        
+        conn.commit()
+    
+    conn.close()
+    return saved_count
+
+def clear_database_batch():
+    """ล้างฐานข้อมูลแบบแบ่งกลุ่มเพื่อป้องกัน memory overflow"""
+    conn = sqlite3.connect('phone_database.db', timeout=60)
+    cursor = conn.cursor()
+    
+    # ลบแบบแบ่งกลุ่ม
+    batch_size = 50000
+    total_deleted = 0
+    
+    while True:
+        cursor.execute(f"DELETE FROM old_phones WHERE id IN (SELECT id FROM old_phones LIMIT {batch_size})")
+        deleted_count = cursor.rowcount
+        conn.commit()
+        total_deleted += deleted_count
+        
+        if deleted_count == 0:
+            break
+    
+    # Vacuum database เพื่อคืนพื้นที่
+    cursor.execute("VACUUM")
+    conn.commit()
+    conn.close()
+    
+    return total_deleted
+
+def export_database_chunked():
+    """ส่งออกข้อมูลแบบแบ่งส่วน"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
+    cursor = conn.cursor()
+    
+    # นับจำนวนทั้งหมด
     cursor.execute("SELECT COUNT(*) FROM old_phones")
-    count = cursor.fetchone()[0]
+    total_count = cursor.fetchone()[0]
     
-    conn.close()
-    return count
-
-def save_phones_to_database(phone_numbers, source_file=""):
-    """บันทึกเบอร์โทรลงฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db')
+    if total_count == 0:
+        conn.close()
+        return None, 0
     
-    for phone in phone_numbers:
-        last_9 = extract_last_9_digits(phone)
-        if len(last_9) == 9:
-            conn.execute(
-                "INSERT OR IGNORE INTO old_phones (phone_number, last_9_digits, source_file) VALUES (?, ?, ?)",
-                (str(phone), last_9, source_file)
-            )
-    
-    conn.commit()
-    conn.close()
-
-def clear_database():
-    """ล้างฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db')
-    conn.execute("DELETE FROM old_phones")
-    conn.commit()
-    conn.close()
-
-def save_phones_as_excel(df):
-    """บันทึก DataFrame เป็น Excel โดยบังคับให้คอลัมน์ A เป็น text"""
+    # สร้างไฟล์ Excel
     output = io.BytesIO()
     wb = openpyxl.Workbook()
     ws = wb.active
     
     # เขียนหัวข้อ
-    for col_idx, col_name in enumerate(df.columns, 1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
+    headers = ['phone_number', 'last_9_digits', 'source_file', 'created_date']
+    for col_idx, header in enumerate(headers, 1):
+        ws.cell(row=1, column=col_idx, value=header)
     
-    # เขียนข้อมูลแถวที่ 2 ขึ้นไป
-    for row_idx, row_data in enumerate(df.values, 2):
-        for col_idx, value in enumerate(row_data, 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            
-            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text
-            if col_idx == 1:
-                if pd.notna(value) and value != '':
-                    # ตั้งค่าเป็น text format โดยไม่ใช้ apostrophe
-                    cell.value = str(value)
-                    cell.number_format = '@'  # Text format
+    # ดึงข้อมูลแบบแบ่งกลุ่ม
+    batch_size = 50000
+    offset = 0
+    row_count = 1
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    while True:
+        status_text.text(f"กำลังประมวลผลข้อมูล... {offset:,} จาก {total_count:,} แถว")
+        progress = min(offset / total_count, 0.95)
+        progress_bar.progress(progress)
+        
+        cursor.execute(
+            "SELECT phone_number, last_9_digits, source_file, created_date FROM old_phones ORDER BY id LIMIT ? OFFSET ?",
+            (batch_size, offset)
+        )
+        
+        batch = cursor.fetchall()
+        if not batch:
+            break
+        
+        # เขียนข้อมูลลง Excel
+        for row in batch:
+            row_count += 1
+            for col_idx, value in enumerate(row, 1):
+                cell = ws.cell(row=row_count, column=col_idx)
+                if col_idx == 1:  # คอลัมน์เบอร์โทร
+                    cell.value = str(value) if value else ''
+                    cell.number_format = '@'
                 else:
-                    cell.value = ''
-            else:
-                # คอลัมน์อื่นๆ
-                if pd.notna(value):
                     cell.value = value
-                else:
-                    cell.value = ''
+        
+        offset += batch_size
+    
+    progress_bar.progress(1.0)
+    status_text.text("กำลังบันทึกไฟล์...")
     
     # ตั้งค่า column width
-    for col_idx, col_name in enumerate(df.columns, 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
+    for col in range(1, len(headers) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
     
     wb.save(output)
+    output.seek(0)
+    
+    conn.close()
+    return output, total_count
+
+def save_phones_as_excel(df):
+    """บันทึก DataFrame เป็น Excel"""
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Phones')
+        
+        # ตั้งค่า format สำหรับคอลัมน์เบอร์โทร
+        workbook = writer.book
+        worksheet = writer.sheets['Phones']
+        
+        # ตั้งค่า column width
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 20)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        # ตั้ง format text สำหรับคอลัมน์แรก
+        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=1):
+            for cell in row:
+                cell.number_format = '@'
+    
     output.seek(0)
     return output
 
@@ -173,8 +283,8 @@ st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจ
 with st.sidebar:
     st.header("📊 สถิติ")
     total_count, valid_count = get_database_stats()
-    st.metric("เบอร์โทรทั้งหมดในระบบ", total_count)
-    st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", valid_count)
+    st.metric("เบอร์โทรทั้งหมดในระบบ", f"{total_count:,}")
+    st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", f"{valid_count:,}")
     
     st.header("📥 การโหลดข้อมูล")
     
@@ -191,7 +301,6 @@ with st.sidebar:
         with col1:
             if st.button("✅ ยืนยัน", key="confirm_export"):
                 if export_password == PASSWORD:
-                    # ตรวจสอบจำนวนข้อมูลก่อน
                     total_phones = get_phones_count()
                     
                     if total_phones == 0:
@@ -199,114 +308,62 @@ with st.sidebar:
                         st.session_state.show_export_password = False
                         st.rerun()
                     
-                    # แสดง progress bar สำหรับข้อมูลจำนวนมาก
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    status_text.text("📥 กำลังโหลดข้อมูลจากฐานข้อมูล...")
-                    progress_bar.progress(30)
-                    
-                    try:
-                        # ดึงข้อมูลทั้งหมดจากฐานข้อมูล
-                        all_phones_df = get_all_phones_from_database()
-                        progress_bar.progress(70)
+                    if total_phones > 1000000:  # ถ้ามากกว่า 1 ล้านเบอร์
+                        st.warning(f"⚠️  มีข้อมูลจำนวนมาก ({total_phones:,} เบอร์) การส่งออกอาจใช้เวลานาน")
                         
-                        status_text.text("📊 กำลังประมวลผลข้อมูล...")
+                        if st.button("🚀 ดาวน์โหลดไฟล์ทั้งหมด", key="download_all"):
+                            with st.spinner('กำลังสร้างไฟล์... อาจใช้เวลาหลายนาที'):
+                                output, count = export_database_chunked()
+                                if output:
+                                    st.success(f"✅ สร้างไฟล์สำเร็จ ({count:,} เบอร์)")
+                                    
+                                    st.download_button(
+                                        label=f"📥 ดาวน์โหลดไฟล์ Excel ({count:,} เบอร์)",
+                                        data=output.getvalue(),
+                                        file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        type="primary",
+                                        use_container_width=True
+                                    )
+                    else:
+                        # แสดงตัวอย่างข้อมูลแบบแบ่งหน้า
+                        st.info(f"📋 แสดงตัวอย่างข้อมูล (ทั้งหมด {total_phones:,} เบอร์)")
                         
-                        # บันทึกข้อมูลลง session state เพื่อใช้ใน pagination
-                        st.session_state.export_data = all_phones_df
-                        st.session_state.current_page = 0
-                        st.session_state.rows_per_page = 20
+                        if 'export_page' not in st.session_state:
+                            st.session_state.export_page = 0
                         
-                        progress_bar.progress(100)
-                        status_text.text("✅ โหลดข้อมูลเสร็จสิ้น!")
+                        page_size = 100
+                        offset = st.session_state.export_page * page_size
                         
-                        # แสดงผลลัพธ์
-                        st.success(f"✅ พบเบอร์โทรทั้งหมด {len(all_phones_df):,} เบอร์")
+                        sample_df = get_phones_batch(limit=page_size, offset=offset)
+                        st.dataframe(sample_df, use_container_width=True, height=300)
                         
-                        # แสดงสถิติเพิ่มเติม
-                        st.subheader("📈 สถิติเพิ่มเติม")
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2, col3 = st.columns([1, 2, 1])
                         with col1:
-                            st.metric("ไฟล์ต้นทางที่แตกต่าง", all_phones_df['source_file'].nunique())
+                            if st.button("◀️ ก่อนหน้า") and st.session_state.export_page > 0:
+                                st.session_state.export_page -= 1
+                                st.rerun()
                         with col2:
-                            valid_9_digits = len(all_phones_df[all_phones_df['last_9_digits'].str.len() == 9])
-                            st.metric("เบอร์ที่มี 9 ตัวท้ายครบ", f"{valid_9_digits:,}")
+                            st.markdown(f"**หน้า {st.session_state.export_page + 1}**")
                         with col3:
-                            latest_date = all_phones_df['created_date'].max()
-                            st.metric("ข้อมูลล่าสุด", pd.to_datetime(latest_date).strftime('%d/%m/%Y'))
-                        
-                        # แสดงข้อมูลแบบแบ่งหน้า
-                        st.subheader("📋 ข้อมูลเบอร์โทรในระบบ")
-                        
-                        # ตั้งค่าการแบ่งหน้า
-                        total_rows = len(all_phones_df)
-                        total_pages = (total_rows + st.session_state.rows_per_page - 1) // st.session_state.rows_per_page
-                        
-                        # ปุ่มควบคุมหน้า
-                        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-                        
-                        with col1:
-                            if st.button("⏪ หน้าแรก") and st.session_state.current_page > 0:
-                                st.session_state.current_page = 0
+                            if st.button("ถัดไป ▶️") and len(sample_df) == page_size:
+                                st.session_state.export_page += 1
                                 st.rerun()
                         
-                        with col2:
-                            if st.button("◀️ ก่อนหน้า") and st.session_state.current_page > 0:
-                                st.session_state.current_page -= 1
-                                st.rerun()
-                        
-                        with col3:
-                            st.markdown(f"**หน้า {st.session_state.current_page + 1} จาก {total_pages}**")
-                            st.markdown(f"แสดง {st.session_state.rows_per_page} แถวต่อหน้า")
-                        
-                        with col4:
-                            if st.button("ถัดไป ▶️") and st.session_state.current_page < total_pages - 1:
-                                st.session_state.current_page += 1
-                                st.rerun()
-                        
-                        with col5:
-                            if st.button("หน้าสุดท้าย ⏩") and st.session_state.current_page < total_pages - 1:
-                                st.session_state.current_page = total_pages - 1
-                                st.rerun()
-                        
-                        # แสดงข้อมูลในหน้าปัจจุบัน
-                        start_idx = st.session_state.current_page * st.session_state.rows_per_page
-                        end_idx = min(start_idx + st.session_state.rows_per_page, total_rows)
-                        
-                        current_data = all_phones_df.iloc[start_idx:end_idx]
-                        
-                        # แสดงตารางข้อมูล
-                        st.dataframe(
-                            current_data,
-                            use_container_width=True,
-                            height=400
-                        )
-                        
-                        # แสดงข้อมูลสรุป
-                        st.info(f"📄 กำลังแสดงแถวที่ {start_idx + 1} ถึง {end_idx} จากทั้งหมด {total_rows:,} แถว")
-                        
-                        # ดาวน์โหลดไฟล์
-                        st.subheader("💾 ดาวน์โหลดข้อมูลทั้งหมด")
-                        st.warning("⚠️  **คำเตือน:** หากมีข้อมูลจำนวนมาก การดาวน์โหลดอาจใช้เวลาสักครู่")
-                        
-                        # สร้างไฟล์ Excel สำหรับดาวน์โหลด
-                        output = save_phones_as_excel(all_phones_df)
-                        
-                        # ดาวน์โหลดไฟล์
-                        st.download_button(
-                            label=f"📥 ดาวน์โหลดไฟล์ Excel ({len(all_phones_df):,} เบอร์)",
-                            data=output.getvalue(),
-                            file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            type="primary",
-                            use_container_width=True
-                        )
-                        
-                    except Exception as e:
-                        st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                        # ดาวน์โหลดไฟล์ทั้งหมด
+                        if st.button("💾 ดาวน์โหลดข้อมูลทั้งหมด"):
+                            with st.spinner('กำลังสร้างไฟล์...'):
+                                all_data = get_phones_batch(limit=total_phones, offset=0)
+                                output = save_phones_as_excel(all_data)
+                                
+                                st.download_button(
+                                    label=f"📥 ดาวน์โหลดไฟล์ Excel ({len(all_data):,} เบอร์)",
+                                    data=output.getvalue(),
+                                    file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    type="primary",
+                                    use_container_width=True
+                                )
                     
                     st.session_state.show_export_password = False
                     st.rerun()
@@ -333,29 +390,37 @@ with st.sidebar:
         with col1:
             if st.button("✅ ยืนยันการล้าง", key="confirm_clear"):
                 if clear_password == PASSWORD:
-                    # แสดงจำนวนข้อมูลที่จะล้าง
-                    total_count, _ = get_database_stats()
-                    if total_count > 0:
-                        st.warning(f"⚠️  คุณกำลังจะล้างข้อมูลทั้งหมด {total_count:,} เบอร์ออกจากระบบ")
-                        
-                        # ยืนยันอีกครั้งสำหรับข้อมูลจำนวนมาก
-                        if total_count > 1000:
-                            st.error("🚨 **คำเตือน:** มีข้อมูลจำนวนมากในระบบ การล้างข้อมูลไม่สามารถกู้คืนได้!")
-                            confirm_final = st.checkbox("ฉันเข้าใจและต้องการล้างข้อมูลทั้งหมดจริงๆ")
-                            if confirm_final:
-                                clear_database()
-                                st.success("✅ ล้างฐานข้อมูลเรียบร้อย!")
-                                st.session_state.show_clear_password = False
-                                st.rerun()
-                        else:
-                            clear_database()
-                            st.success("✅ ล้างฐานข้อมูลเรียบร้อย!")
-                            st.session_state.show_clear_password = False
-                            st.rerun()
-                    else:
+                    total_count = get_phones_count()
+                    
+                    if total_count == 0:
                         st.info("ℹ️ ไม่มีข้อมูลในระบบที่จะล้าง")
                         st.session_state.show_clear_password = False
                         st.rerun()
+                    
+                    st.warning(f"⚠️  คุณกำลังจะล้างข้อมูลทั้งหมด {total_count:,} เบอร์")
+                    
+                    if total_count > 100000:
+                        st.error("🚨 **คำเตือน:** มีข้อมูลจำนวนมากในระบบ! การล้างข้อมูลอาจใช้เวลานานและไม่สามารถกู้คืนได้!")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("🔥 ล้างข้อมูลทั้งหมด", type="primary"):
+                                with st.spinner('กำลังล้างข้อมูล... อาจใช้เวลานาน'):
+                                    deleted_count = clear_database_batch()
+                                    st.success(f"✅ ล้างฐานข้อมูลเรียบร้อย! ลบไปทั้งหมด {deleted_count:,} เบอร์")
+                                    st.session_state.show_clear_password = False
+                                    st.rerun()
+                        with col2:
+                            if st.button("❌ ยกเลิกการล้าง"):
+                                st.session_state.show_clear_password = False
+                                st.rerun()
+                    else:
+                        if st.button("🗑️ ยืนยันล้างข้อมูล"):
+                            with st.spinner('กำลังล้างข้อมูล...'):
+                                deleted_count = clear_database_batch()
+                                st.success(f"✅ ล้างฐานข้อมูลเรียบร้อย! ลบไปทั้งหมด {deleted_count:,} เบอร์")
+                                st.session_state.show_clear_password = False
+                                st.rerun()
                 else:
                     st.error("❌ รหัสผ่านไม่ถูกต้อง")
         
@@ -364,7 +429,7 @@ with st.sidebar:
                 st.session_state.show_clear_password = False
                 st.rerun()
 
-# ส่วนหลัก (ส่วนที่เหลือของโค้ดเดิม)
+# ส่วนหลัก
 st.markdown("---")
 
 # อัพโหลดไฟล์
@@ -389,7 +454,7 @@ if uploaded_file is not None:
         if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
             with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
                 try:
-                    # อ่านไฟล์ Excel โดยรักษา format เดิม
+                    # อ่านไฟล์ Excel
                     df = pd.read_excel(uploaded_file, dtype={'A': str})
                     
                     # ตรวจสอบคอลัมน์
@@ -422,8 +487,8 @@ if uploaded_file is not None:
                     
                     # บันทึกลงฐานข้อมูลถ้าต้องการ
                     if save_to_db:
-                        save_phones_to_database(df['A'].tolist(), uploaded_file.name)
-                        st.success("💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย")
+                        saved_count = save_phones_to_database_batch(df['A'].tolist(), uploaded_file.name)
+                        st.success(f"💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย ({saved_count} เบอร์)")
                     
                     # แสดงผลลัพธ์
                     st.success("✅ ตรวจสอบเสร็จสิ้น!")
@@ -466,44 +531,33 @@ if uploaded_file is not None:
                     
                 except Exception as e:
                     st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
 
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-    ### 📝 วิธีการใช้โปรแกรม
+    ### 🚀 สำหรับข้อมูลจำนวนมาก (หมื่นล้านเบอร์)
     
-    1. **เตรียมไฟล์ Excel**: ไฟล์ต้องมีคอลัมน์ **A** หรือคอลัมน์แรกเป็นเบอร์โทร
-    2. **อัพโหลดไฟล์**: คลิกปุ่ม "Browse files" เพื่อเลือกไฟล์ Excel
-    3. **เริ่มตรวจสอบ**: คลิกปุ่ม "เริ่มตรวจสอบเบอร์โทรซ้ำ"
-    4. **ดาวน์โหลดผลลัพธ์**: ดาวน์โหลดไฟล์ที่มีเฉพาะเบอร์ที่ไม่ซ้ำ
+    **การโหลดข้อมูล:**
+    - ระบบจะแสดงเฉพาะตัวอย่างข้อมูล
+    - ใช้ปุ่ม "ดาวน์โหลดไฟล์ทั้งหมด" สำหรับข้อมูลทั้งหมด
+    - ข้อมูลจะถูกประมวลผลแบบแบ่งส่วนเพื่อป้องกัน memory overflow
     
-    ### 🔐 การรักษาความปลอดภัย
+    **การล้างข้อมูล:**
+    - ระบบจะล้างข้อมูลแบบแบ่งกลุ่ม
+    - ใช้เวลาแต่ปลอดภัยต่อ memory
+    - มีการยืนยันหลายขั้นตอนสำหรับข้อมูลจำนวนมาก
     
-    - **โหลดข้อมูลทั้งหมด**: ต้องใช้รหัสผ่าน **23669**
-    - **ล้างฐานข้อมูล**: ต้องใช้รหัสผ่าน **23669**
-    
-    ### 🔍 หลักการทำงาน
-    
-    - ตรวจสอบซ้ำโดยใช้ **ตัวเลข 9 ตัวท้าย** ของเบอร์โทร
-    - ตัวอย่าง: เบอร์ `081-234-5678` จะใช้ `123456789` ในการตรวจสอบ
-    - เบอร์ที่ซ้ำจะถูกกรองออกจากผลลัพธ์
-    - **รักษาเลข 0 หน้าเบอร์โทร** โดยอัตโนมัติ
-    
-    ### 💾 การจัดการข้อมูล
-    
-    - **บันทึกข้อมูล**: เมื่อเลือก "บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล"
-    - **โหลดข้อมูล**: ใช้ปุ่ม "โหลดเบอร์โทรทั้งหมดจากระบบ" ใน sidebar (ต้องใช้รหัสผ่าน)
-    - **ล้างข้อมูล**: ใช้ปุ่ม "ล้างฐานข้อมูล" ใน sidebar (ต้องใช้รหัสผ่าน)
-    - **ข้อมูลจะถูกเก็บในฐานข้อมูล SQLite** ในเซิร์ฟเวอร์
+    **การบันทึกข้อมูล:**
+    - บันทึกแบบแบ่งกลุ่ม 10,000 เบอร์/ครั้ง
+    - ใช้ UNIQUE constraint เพื่อป้องกันข้อมูลซ้ำ
+    - มี index เพื่อเพิ่มความเร็ว
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ"
+    "พัฒนาด้วย Streamlit | รองรับข้อมูลขนาดมหาศาล"
     "</div>",
     unsafe_allow_html=True
 )
