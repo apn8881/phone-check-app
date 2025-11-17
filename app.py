@@ -91,6 +91,17 @@ def get_all_phones_from_database():
     conn.close()
     return df
 
+def get_phones_count():
+    """นับจำนวนเบอร์โทรทั้งหมด"""
+    conn = sqlite3.connect('phone_database.db')
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM old_phones")
+    count = cursor.fetchone()[0]
+    
+    conn.close()
+    return count
+
 def save_phones_to_database(phone_numbers, source_file=""):
     """บันทึกเบอร์โทรลงฐานข้อมูล"""
     conn = sqlite3.connect('phone_database.db')
@@ -180,44 +191,122 @@ with st.sidebar:
         with col1:
             if st.button("✅ ยืนยัน", key="confirm_export"):
                 if export_password == PASSWORD:
-                    with st.spinner('กำลังโหลดข้อมูลจากฐานข้อมูล...'):
-                        try:
-                            # ดึงข้อมูลทั้งหมดจากฐานข้อมูล
-                            all_phones_df = get_all_phones_from_database()
-                            
-                            if len(all_phones_df) > 0:
-                                st.success(f"✅ พบเบอร์โทรทั้งหมด {len(all_phones_df)} เบอร์")
-                                
-                                # แสดงตัวอย่างข้อมูล
-                                st.subheader("📋 ตัวอย่างข้อมูล")
-                                st.dataframe(all_phones_df.head(10), use_container_width=True)
-                                
-                                # สร้างไฟล์ Excel สำหรับดาวน์โหลด
-                                output = save_phones_as_excel(all_phones_df)
-                                
-                                # ดาวน์โหลดไฟล์
-                                st.download_button(
-                                    label="💾 ดาวน์โหลดเบอร์โทรทั้งหมด",
-                                    data=output.getvalue(),
-                                    file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    type="primary",
-                                    use_container_width=True
-                                )
-                                
-                                # แสดงสถิติเพิ่มเติม
-                                st.subheader("📈 สถิติเพิ่มเติม")
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric("ไฟล์ต้นทางที่แตกต่าง", all_phones_df['source_file'].nunique())
-                                with col2:
-                                    st.metric("เบอร์ที่มี 9 ตัวท้ายครบ", len(all_phones_df[all_phones_df['last_9_digits'].str.len() == 9]))
-                                
-                            else:
-                                st.info("ℹ️ ยังไม่มีข้อมูลเบอร์โทรในระบบ")
-                                
-                        except Exception as e:
-                            st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
+                    # ตรวจสอบจำนวนข้อมูลก่อน
+                    total_phones = get_phones_count()
+                    
+                    if total_phones == 0:
+                        st.info("ℹ️ ยังไม่มีข้อมูลเบอร์โทรในระบบ")
+                        st.session_state.show_export_password = False
+                        st.rerun()
+                    
+                    # แสดง progress bar สำหรับข้อมูลจำนวนมาก
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    status_text.text("📥 กำลังโหลดข้อมูลจากฐานข้อมูล...")
+                    progress_bar.progress(30)
+                    
+                    try:
+                        # ดึงข้อมูลทั้งหมดจากฐานข้อมูล
+                        all_phones_df = get_all_phones_from_database()
+                        progress_bar.progress(70)
+                        
+                        status_text.text("📊 กำลังประมวลผลข้อมูล...")
+                        
+                        # บันทึกข้อมูลลง session state เพื่อใช้ใน pagination
+                        st.session_state.export_data = all_phones_df
+                        st.session_state.current_page = 0
+                        st.session_state.rows_per_page = 20
+                        
+                        progress_bar.progress(100)
+                        status_text.text("✅ โหลดข้อมูลเสร็จสิ้น!")
+                        
+                        # แสดงผลลัพธ์
+                        st.success(f"✅ พบเบอร์โทรทั้งหมด {len(all_phones_df):,} เบอร์")
+                        
+                        # แสดงสถิติเพิ่มเติม
+                        st.subheader("📈 สถิติเพิ่มเติม")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("ไฟล์ต้นทางที่แตกต่าง", all_phones_df['source_file'].nunique())
+                        with col2:
+                            valid_9_digits = len(all_phones_df[all_phones_df['last_9_digits'].str.len() == 9])
+                            st.metric("เบอร์ที่มี 9 ตัวท้ายครบ", f"{valid_9_digits:,}")
+                        with col3:
+                            latest_date = all_phones_df['created_date'].max()
+                            st.metric("ข้อมูลล่าสุด", pd.to_datetime(latest_date).strftime('%d/%m/%Y'))
+                        
+                        # แสดงข้อมูลแบบแบ่งหน้า
+                        st.subheader("📋 ข้อมูลเบอร์โทรในระบบ")
+                        
+                        # ตั้งค่าการแบ่งหน้า
+                        total_rows = len(all_phones_df)
+                        total_pages = (total_rows + st.session_state.rows_per_page - 1) // st.session_state.rows_per_page
+                        
+                        # ปุ่มควบคุมหน้า
+                        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+                        
+                        with col1:
+                            if st.button("⏪ หน้าแรก") and st.session_state.current_page > 0:
+                                st.session_state.current_page = 0
+                                st.rerun()
+                        
+                        with col2:
+                            if st.button("◀️ ก่อนหน้า") and st.session_state.current_page > 0:
+                                st.session_state.current_page -= 1
+                                st.rerun()
+                        
+                        with col3:
+                            st.markdown(f"**หน้า {st.session_state.current_page + 1} จาก {total_pages}**")
+                            st.markdown(f"แสดง {st.session_state.rows_per_page} แถวต่อหน้า")
+                        
+                        with col4:
+                            if st.button("ถัดไป ▶️") and st.session_state.current_page < total_pages - 1:
+                                st.session_state.current_page += 1
+                                st.rerun()
+                        
+                        with col5:
+                            if st.button("หน้าสุดท้าย ⏩") and st.session_state.current_page < total_pages - 1:
+                                st.session_state.current_page = total_pages - 1
+                                st.rerun()
+                        
+                        # แสดงข้อมูลในหน้าปัจจุบัน
+                        start_idx = st.session_state.current_page * st.session_state.rows_per_page
+                        end_idx = min(start_idx + st.session_state.rows_per_page, total_rows)
+                        
+                        current_data = all_phones_df.iloc[start_idx:end_idx]
+                        
+                        # แสดงตารางข้อมูล
+                        st.dataframe(
+                            current_data,
+                            use_container_width=True,
+                            height=400
+                        )
+                        
+                        # แสดงข้อมูลสรุป
+                        st.info(f"📄 กำลังแสดงแถวที่ {start_idx + 1} ถึง {end_idx} จากทั้งหมด {total_rows:,} แถว")
+                        
+                        # ดาวน์โหลดไฟล์
+                        st.subheader("💾 ดาวน์โหลดข้อมูลทั้งหมด")
+                        st.warning("⚠️  **คำเตือน:** หากมีข้อมูลจำนวนมาก การดาวน์โหลดอาจใช้เวลาสักครู่")
+                        
+                        # สร้างไฟล์ Excel สำหรับดาวน์โหลด
+                        output = save_phones_as_excel(all_phones_df)
+                        
+                        # ดาวน์โหลดไฟล์
+                        st.download_button(
+                            label=f"📥 ดาวน์โหลดไฟล์ Excel ({len(all_phones_df):,} เบอร์)",
+                            data=output.getvalue(),
+                            file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="primary",
+                            use_container_width=True
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
                     
                     st.session_state.show_export_password = False
                     st.rerun()
@@ -244,10 +333,29 @@ with st.sidebar:
         with col1:
             if st.button("✅ ยืนยันการล้าง", key="confirm_clear"):
                 if clear_password == PASSWORD:
-                    clear_database()
-                    st.success("✅ ล้างฐานข้อมูลเรียบร้อย!")
-                    st.session_state.show_clear_password = False
-                    st.rerun()
+                    # แสดงจำนวนข้อมูลที่จะล้าง
+                    total_count, _ = get_database_stats()
+                    if total_count > 0:
+                        st.warning(f"⚠️  คุณกำลังจะล้างข้อมูลทั้งหมด {total_count:,} เบอร์ออกจากระบบ")
+                        
+                        # ยืนยันอีกครั้งสำหรับข้อมูลจำนวนมาก
+                        if total_count > 1000:
+                            st.error("🚨 **คำเตือน:** มีข้อมูลจำนวนมากในระบบ การล้างข้อมูลไม่สามารถกู้คืนได้!")
+                            confirm_final = st.checkbox("ฉันเข้าใจและต้องการล้างข้อมูลทั้งหมดจริงๆ")
+                            if confirm_final:
+                                clear_database()
+                                st.success("✅ ล้างฐานข้อมูลเรียบร้อย!")
+                                st.session_state.show_clear_password = False
+                                st.rerun()
+                        else:
+                            clear_database()
+                            st.success("✅ ล้างฐานข้อมูลเรียบร้อย!")
+                            st.session_state.show_clear_password = False
+                            st.rerun()
+                    else:
+                        st.info("ℹ️ ไม่มีข้อมูลในระบบที่จะล้าง")
+                        st.session_state.show_clear_password = False
+                        st.rerun()
                 else:
                     st.error("❌ รหัสผ่านไม่ถูกต้อง")
         
