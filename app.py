@@ -92,15 +92,68 @@ def clear_database():
     conn.commit()
     conn.close()
 
-def save_as_csv(df):
-    """บันทึกเป็น CSV แบบรักษาเลข 0"""
+def save_phones_as_excel(df):
+    """บันทึก DataFrame เป็น Excel โดยบังคับให้คอลัมน์ A เป็น text"""
+    output = io.BytesIO()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    
+    # เขียนหัวข้อ
+    for col_idx, col_name in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        if col_idx == 1:  # คอลัมน์ A
+            cell.number_format = '@'
+    
+    # เขียนข้อมูลแถวที่ 2 ขึ้นไป
+    for row_idx, row_data in enumerate(df.values, 2):
+        for col_idx, value in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            
+            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text
+            if col_idx == 1:
+                cell.number_format = '@'  # Text format
+                if pd.notna(value) and value != '':
+                    # ใช้ apostrophe เพื่อบังคับให้ Excel เห็นเป็น text
+                    phone_str = str(value).strip()
+                    cell.value = "'" + phone_str  # เพิ่ม apostrophe หน้า
+                else:
+                    cell.value = ''
+            else:
+                # คอลัมน์อื่นๆ
+                if pd.notna(value):
+                    cell.value = value
+                else:
+                    cell.value = ''
+    
+    # ตั้งค่า column width
+    ws.column_dimensions['A'].width = 20
+    
+    wb.save(output)
+    output.seek(0)
+    return output
+
+def save_phones_as_excel_simple(df):
+    """วิธีที่ง่ายกว่า: ใช้ pandas ExcelWriter"""
     output = io.BytesIO()
     
-    # ใช้ encoding utf-8-sig สำหรับ Excel
-    csv_content = df.to_csv(index=False, encoding='utf-8-sig')
-    output.write(csv_content.encode('utf-8-sig'))
-    output.seek(0)
+    # สร้าง DataFrame ใหม่โดยแปลงคอลัมน์ A เป็น string พร้อม apostrophe
+    df_export = df.copy()
+    df_export['A'] = "'" + df_export['A'].astype(str)
     
+    # ใช้ ExcelWriter
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export.to_excel(writer, index=False, sheet_name='เบอร์ไม่ซ้ำ')
+        
+        # ตั้ง format ให้คอลัมน์ A
+        workbook = writer.book
+        worksheet = writer.sheets['เบอร์ไม่ซ้ำ']
+        
+        # ตั้ง text format ให้คอลัมน์ A
+        for row in range(2, len(df_export) + 2):  # ข้ามหัวข้อ
+            cell = worksheet.cell(row=row, column=1)
+            cell.number_format = '@'
+    
+    output.seek(0)
     return output
 
 # เริ่มต้นฐานข้อมูล
@@ -224,19 +277,19 @@ if uploaded_file is not None:
                     else:
                         download_filename = f"{original_name}-Cut.xlsx"
                     
-                    # บันทึกเป็น CSV
-                    output = save_as_csv(unique_df)
+                    # บันทึกเป็น Excel
+                    output = save_phones_as_excel_simple(unique_df)
                     
                     st.download_button(
                         label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
                         data=output.getvalue(),
                         file_name=download_filename,
-                        mime="text/csv",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         type="primary",
                         use_container_width=True
                     )
                     
-                    st.info("💡 **คำแนะนำ:** ไฟล์ CSV รักษาเลข 0 หน้าเบอร์โทรได้ดีกว่า Excel")
+                    st.info("📝 **หมายเหตุ:** ไฟล์ผลลัพธ์จะรักษาเลข 0 หน้าเบอร์โทรโดยอัตโนมัติ")
                     
                 except Exception as e:
                     st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
@@ -258,6 +311,7 @@ with st.expander("💡 คู่มือการใช้งาน"):
     - ตรวจสอบซ้ำโดยใช้ **ตัวเลข 9 ตัวท้าย** ของเบอร์โทร
     - ตัวอย่าง: เบอร์ `081-234-5678` จะใช้ `123456789` ในการตรวจสอบ
     - เบอร์ที่ซ้ำจะถูกกรองออกจากผลลัพธ์
+    - **รักษาเลข 0 หน้าเบอร์โทร** โดยอัตโนมัติ
     
     ### 💾 การจัดการข้อมูล
     
