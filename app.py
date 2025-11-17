@@ -154,32 +154,104 @@ def export_all_phones():
     conn.close()
     return df
 
+def export_phones_txt():
+    """ส่งออกข้อมูลทั้งหมดเป็นไฟล์ txt"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
+    cursor = conn.cursor()
+    
+    # ดึงข้อมูลทั้งหมด
+    cursor.execute("""
+        SELECT phone_number, last_9_digits, source_file, created_date 
+        FROM old_phones 
+        ORDER BY created_date DESC
+    """)
+    
+    # สร้างเนื้อหา txt
+    txt_content = "เบอร์โทรทั้งหมดในระบบ\n"
+    txt_content += "=" * 50 + "\n"
+    txt_content += f"วันที่ส่งออก: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    txt_content += "=" * 50 + "\n\n"
+    
+    # นับจำนวน
+    count = 0
+    for row in cursor:
+        phone, last_9, source, created = row
+        txt_content += f"เบอร์โทร: {phone}\n"
+        txt_content += f"ตัวเลข 9 ตัวท้าย: {last_9}\n"
+        txt_content += f"ไฟล์ต้นทาง: {source}\n"
+        txt_content += f"วันที่บันทึก: {created}\n"
+        txt_content += "-" * 30 + "\n"
+        count += 1
+    
+    txt_content += f"\nรวมทั้งหมด: {count} เบอร์\n"
+    
+    conn.close()
+    return txt_content, count
+
+def export_phones_simple_txt():
+    """ส่งออกเฉพาะเบอร์โทรเป็นไฟล์ txt (แบบง่าย)"""
+    conn = sqlite3.connect('phone_database.db', timeout=30)
+    cursor = conn.cursor()
+    
+    # ดึงเฉพาะเบอร์โทร
+    cursor.execute("SELECT phone_number FROM old_phones ORDER BY created_date DESC")
+    
+    # สร้างเนื้อหา txt แบบง่าย (เบอร์โทรอย่างเดียว)
+    txt_content = f"# เบอร์โทรทั้งหมดในระบบ\n"
+    txt_content += f"# วันที่ส่งออก: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    txt_content += f"# รวมทั้งหมด: \n\n"
+    
+    count = 0
+    for row in cursor:
+        phone = row[0]
+        if phone and str(phone).strip():  # ตรวจสอบว่าไม่ว่าง
+            txt_content += f"{phone}\n"
+            count += 1
+    
+    # อัพเดตจำนวน
+    txt_content = txt_content.replace("# รวมทั้งหมด: ", f"# รวมทั้งหมด: {count} เบอร์")
+    
+    conn.close()
+    return txt_content, count
+
 def save_phones_as_excel(df):
-    """บันทึก DataFrame เป็น Excel"""
+    """บันทึก DataFrame เป็น Excel - สำหรับการตรวจสอบปกติ"""
     output = io.BytesIO()
     
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Phones')
-        
-        workbook = writer.book
-        worksheet = writer.sheets['Phones']
-        
-        for column in worksheet.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = min(max_length + 2, 20)
-            worksheet.column_dimensions[column_letter].width = adjusted_width
-        
-        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=1):
-            for cell in row:
-                cell.number_format = '@'
+    # ตรวจสอบว่า DataFrame ว่างหรือไม่
+    if df.empty or len(df) == 0:
+        # สร้าง DataFrame ว่างที่มีหัวข้อคอลัมน์
+        empty_df = pd.DataFrame(columns=['phone_number', 'last_9_digits', 'source_file', 'created_date'])
+        empty_df.loc[0] = ['ไม่มีข้อมูล', '', '', '']
+        df = empty_df
     
+    # ใช้ openpyxl โดยตรงเพื่อควบคุมได้มากขึ้น
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "เบอร์โทรทั้งหมด"
+    
+    # เขียนหัวข้อ
+    headers = ['เบอร์โทร', 'ตัวเลข 9 ตัวท้าย', 'ไฟล์ต้นทาง', 'วันที่บันทึก']
+    for col_idx, header in enumerate(headers, 1):
+        ws.cell(row=1, column=col_idx, value=header)
+        # ตั้งค่า style สำหรับหัวข้อ
+        ws.cell(row=1, column=col_idx).font = openpyxl.styles.Font(bold=True)
+    
+    # เขียนข้อมูล
+    for row_idx, row_data in enumerate(df.values, 2):
+        for col_idx, value in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            # ตั้งค่า format สำหรับคอลัมน์เบอร์โทร (คอลัมน์แรก)
+            if col_idx == 1:
+                cell.number_format = '@'  # Text format
+    
+    # ตั้งค่า column width
+    column_widths = [20, 15, 20, 15]
+    for col_idx, width in enumerate(column_widths, 1):
+        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = width
+    
+    wb.save(output)
     output.seek(0)
     return output
 
@@ -262,22 +334,48 @@ with st.sidebar:
         
         # ดาวน์โหลดไฟล์ทั้งหมด
         st.markdown("---")
-        if st.button("💾 ดาวน์โหลดข้อมูลทั้งหมด", key="download_all"):
+        st.subheader("💾 ดาวน์โหลดข้อมูลทั้งหมด")
+        
+        # ตัวเลือกการดาวน์โหลด
+        download_option = st.radio(
+            "รูปแบบไฟล์:",
+            ["📄 TXT - เบอร์โทรอย่างเดียว (เร็ว)", "📋 TXT - พร้อมรายละเอียด", "📊 Excel - สำหรับรายงาน"],
+            index=0
+        )
+        
+        if st.button("🚀 สร้างไฟล์ดาวน์โหลด", key="generate_download"):
             with st.spinner('กำลังสร้างไฟล์...'):
                 try:
-                    all_data = export_all_phones()
-                    output = save_phones_as_excel(all_data)
+                    if download_option == "📄 TXT - เบอร์โทรอย่างเดียว (เร็ว)":
+                        txt_content, count = export_phones_simple_txt()
+                        file_type = "text/plain"
+                        file_name = f"phones_export_simple_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                        st.success(f"✅ สร้างไฟล์ TXT สำเร็จ ({count} เบอร์)")
+                        
+                    elif download_option == "📋 TXT - พร้อมรายละเอียด":
+                        txt_content, count = export_phones_txt()
+                        file_type = "text/plain"
+                        file_name = f"phones_export_detailed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                        st.success(f"✅ สร้างไฟล์ TXT สำเร็จ ({count} เบอร์)")
                     
-                    st.success(f"✅ สร้างไฟล์สำเร็จ ({len(all_data):,} เบอร์)")
+                    else:  # Excel
+                        all_data = export_all_phones()
+                        output = save_phones_as_excel(all_data)
+                        txt_content = output.getvalue()
+                        file_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        file_name = f"phones_export_excel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                        st.success(f"✅ สร้างไฟล์ Excel สำเร็จ ({len(all_data)} เบอร์)")
                     
+                    # ปุ่มดาวน์โหลด
                     st.download_button(
-                        label=f"📥 ดาวน์โหลดไฟล์ Excel",
-                        data=output.getvalue(),
-                        file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        label=f"📥 ดาวน์โหลดไฟล์",
+                        data=txt_content,
+                        file_name=file_name,
+                        mime=file_type,
                         type="primary",
                         use_container_width=True
                     )
+                    
                 except Exception as e:
                     st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
         
@@ -443,31 +541,29 @@ if uploaded_file is not None:
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-    ### 🔐 วิธีการใช้ระบบรหัสผ่าน
+    ### 📥 การดาวน์โหลดข้อมูลทั้งหมด
     
-    **การโหลดข้อมูลทั้งหมด:**
-    1. คลิกปุ่ม "โหลดเบอร์โทรทั้งหมดจากระบบ"
-    2. กรอกรหัสผ่าน: **23669**
-    3. คลิก "ยืนยัน"
-    4. ระบบจะแสดงข้อมูลและมีปุ่มดาวน์โหลด
+    **ตัวเลือกไฟล์ TXT:**
+    - 📄 **TXT - เบอร์โทรอย่างเดียว**: เร็วที่สุด เหมาะสำหรับข้อมูลจำนวนมาก
+    - 📋 **TXT - พร้อมรายละเอียด**: มีข้อมูลครบ (เบอร์โทร, 9 ตัวท้าย, ไฟล์ต้นทาง, วันที่)
+    - 📊 **Excel**: สำหรับการทำรายงานหรือวิเคราะห์ข้อมูล
     
-    **การล้างฐานข้อมูล:**
-    1. คลิกปุ่ม "ล้างฐานข้อมูล" 
-    2. กรอกรหัสผ่าน: **23669**
-    3. คลิก "ยืนยันการล้าง"
-    4. ยืนยันอีกครั้งด้วยปุ่ม "ยืนยันล้างข้อมูลทั้งหมด"
+    ### ⚡ ข้อดีของไฟล์ TXT
+    - สร้างไฟล์เร็วมาก
+    ไฟล์ขนาดเล็ก
+    - เปิดได้กับทุกโปรแกรม
+    - เหมาะกับข้อมูลเป็นหมื่นล้านเบอร์
     
-    ### ⚠️ หมายเหตุสำคัญ
+    ### 🔐 รหัสผ่าน
     - รหัสผ่านคือ **23669**
-    - การล้างข้อมูลไม่สามารถกู้คืนได้
-    - ระบบออกแบบมาให้ใช้งานง่ายและปลอดภัย
+    - ใช้สำหรับโหลดข้อมูลทั้งหมดและล้างฐานข้อมูล
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ"
+    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - รองรับไฟล์ TXT"
     "</div>",
     unsafe_allow_html=True
 )
