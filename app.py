@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # รหัสผ่าน
-PASSWORD = "23669"
+PASSWORD = "520718"
 
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
