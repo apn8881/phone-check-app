@@ -3,8 +3,8 @@ import pandas as pd
 import sqlite3
 import io
 from datetime import datetime
-import tempfile
-import os
+import openpyxl
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # ตั้งค่าหน้า
 st.set_page_config(
@@ -92,6 +92,40 @@ def clear_database():
     conn.commit()
     conn.close()
 
+def save_phones_as_excel(df):
+    """บันทึก DataFrame เป็น Excel โดยบังคับให้คอลัมน์ A เป็น text"""
+    output = io.BytesIO()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    
+    # เขียนหัวข้อ
+    for col_idx, col_name in enumerate(df.columns, 1):
+        ws.cell(row=1, column=col_idx, value=col_name)
+    
+    # เขียนข้อมูล
+    for row_idx, row_data in enumerate(df.values, 2):
+        for col_idx, value in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            
+            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text
+            if col_idx == 1:
+                if pd.notna(value) and value != '':
+                    # บังคับเป็น text format โดยไม่ใช้ apostrophe
+                    cell.value = str(value)
+                    cell.number_format = '@'  # Text format
+                else:
+                    cell.value = ''
+            else:
+                # คอลัมน์อื่นๆ
+                if pd.notna(value):
+                    cell.value = value
+                else:
+                    cell.value = ''
+    
+    wb.save(output)
+    output.seek(0)
+    return output
+
 # เริ่มต้นฐานข้อมูล
 init_database()
 
@@ -163,9 +197,10 @@ if uploaded_file is not None:
                     
                     df['A'] = df['A'].fillna('')
                     
-                    # แสดงตัวอย่างข้อมูล
+                    # แสดงตัวอย่างข้อมูลต้นฉบับ
                     with st.expander("📋 ดูตัวอย่างข้อมูลที่อัพโหลด"):
-                        st.dataframe(df.head(10), use_container_width=True)
+                        st.write("**ตัวอย่างเบอร์โทรต้นฉบับ (5 แถวแรก):**")
+                        st.dataframe(df[['A']].head(), use_container_width=True)
                     
                     # ดึงตัวเลข 9 ตัวท้าย
                     df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
@@ -188,6 +223,7 @@ if uploaded_file is not None:
                     # บันทึกลงฐานข้อมูลถ้าต้องการ
                     if save_to_db:
                         save_phones_to_database(df['A'].tolist(), uploaded_file.name)
+                        st.success("💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย")
                     
                     # แสดงผลลัพธ์
                     st.success("✅ ตรวจสอบเสร็จสิ้น!")
@@ -202,30 +238,35 @@ if uploaded_file is not None:
                         st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df), delta=f"-{len(df) - len(unique_df)}")
                     
                     # แสดงตัวอย่างผลลัพธ์
-                    with st.expander("👀 ดูตัวอย่างผลลัพธ์"):
+                    with st.expander("👀 ดูตัวอย่างผลลัพธ์ (เบอร์ที่ไม่ซ้ำ)"):
                         st.dataframe(unique_df.head(10), use_container_width=True)
                     
                     # ดาวน์โหลดไฟล์ผลลัพธ์
                     st.markdown("---")
                     st.subheader("📥 ดาวน์โหลดไฟล์ผลลัพธ์")
                     
-                    # สร้างไฟล์ใน memory
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        unique_df.to_excel(writer, index=False, sheet_name='เบอร์ไม่ซ้ำ')
-                    output.seek(0)
+                    # ใช้ฟังก์ชันใหม่ที่รักษาเลข 0
+                    output = save_phones_as_excel(unique_df)
                     
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     download_filename = f"filtered_{timestamp}_{uploaded_file.name}"
                     
                     st.download_button(
-                        label="💾 ดาวน์โหลดไฟล์ Excel",
+                        label="💾 ดาวน์โหลดไฟล์ Excel (รักษาเลข 0 หน้า)",
                         data=output.getvalue(),
                         file_name=download_filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         type="primary",
                         use_container_width=True
                     )
+                    
+                    # แสดงตัวอย่างเบอร์โทรก่อนและหลัง
+                    with st.expander("🔍 ตรวจสอบการรักษาเลข 0"):
+                        st.write("**ตัวอย่างการรักษาเลข 0 หน้าเบอร์โทร:**")
+                        if len(unique_df) > 0:
+                            sample_phones = unique_df['A'].head(5).tolist()
+                            for i, phone in enumerate(sample_phones, 1):
+                                st.write(f"{i}. `{phone}` (ประเภท: {type(phone).__name__})")
                     
                 except Exception as e:
                     st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
@@ -247,6 +288,7 @@ with st.expander("💡 คู่มือการใช้งาน"):
     - ตรวจสอบซ้ำโดยใช้ **ตัวเลข 9 ตัวท้าย** ของเบอร์โทร
     - ตัวอย่าง: เบอร์ `081-234-5678` จะใช้ `123456789` ในการตรวจสอบ
     - เบอร์ที่ซ้ำจะถูกกรองออกจากผลลัพธ์
+    - **รักษาเลข 0 หน้าเบอร์โทร** ในไฟล์ผลลัพธ์
     
     ### 💾 การจัดการข้อมูล
     
