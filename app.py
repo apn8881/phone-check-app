@@ -192,7 +192,8 @@ with tab2:
     with col3:
         st.metric("ไฟล์ต้นทาง", file_count)
     with col4:
-        st.metric("อัตราสมบูรณ์", f"{(valid_count/total_count*100):.1f}%" if total_count > 0 else "0%")
+        completeness = (valid_count/total_count*100) if total_count > 0 else 0
+        st.metric("อัตราสมบูรณ์", f"{completeness:.1f}%")
     
     if st.button("🔄 โหลดข้อมูลล่าสุด"):
         try:
@@ -222,9 +223,14 @@ with tab2:
                         st.write(f"- {file}: {count} เบอร์")
                 with col2:
                     st.write("**การกระจายตัว:**")
-                    st.write(f- เบอร์ที่ขึ้นต้นด้วย 0: {len(df_all_phones[df_all_phones['เบอร์โทร'].str.startswith('0', na=False)])}")
-                    st.write(f- เบอร์ที่ขึ้นต้นด้วย 6: {len(df_all_phones[df_all_phones['เบอร์โทร'].str.startswith('6', na=False)])}")
-                    st.write(f- เบอร์ที่ขึ้นต้นด้วย 8: {len(df_all_phones[df_all_phones['เบอร์โทร'].str.startswith('8', na=False)])}")
+                    # แก้ไขบรรทัดนี้ - ใช้วิธีที่ถูกต้อง
+                    starts_with_0 = len(df_all_phones[df_all_phones['เบอร์โทร'].str.startswith('0', na=False)])
+                    starts_with_6 = len(df_all_phones[df_all_phones['เบอร์โทร'].str.startswith('6', na=False)])
+                    starts_with_8 = len(df_all_phones[df_all_phones['เบอร์โทร'].str.startswith('8', na=False)])
+                    
+                    st.write(f"- เบอร์ที่ขึ้นต้นด้วย 0: {starts_with_0}")
+                    st.write(f"- เบอร์ที่ขึ้นต้นด้วย 6: {starts_with_6}")
+                    st.write(f"- เบอร์ที่ขึ้นต้นด้วย 8: {starts_with_8}")
                 
                 # ดาวน์โหลด
                 output_all = io.BytesIO()
@@ -260,14 +266,17 @@ with tab3:
             st.error("⚠️ คลิกอีกครั้งเพื่อยืนยันการล้างฐานข้อมูล!")
     
     if st.session_state.get('confirm_clear', False):
-        if st.button("✅ ยืนยันการล้าง", type="primary"):
-            clear_database()
-            st.success("ล้างฐานข้อมูลเรียบร้อย!")
-            st.session_state.confirm_clear = False
-            st.rerun()
-        if st.button("❌ ยกเลิก"):
-            st.session_state.confirm_clear = False
-            st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ ยืนยันการล้าง", type="primary"):
+                clear_database()
+                st.success("ล้างฐานข้อมูลเรียบร้อย!")
+                st.session_state.confirm_clear = False
+                st.rerun()
+        with col2:
+            if st.button("❌ ยกเลิก"):
+                st.session_state.confirm_clear = False
+                st.rerun()
     
     st.subheader("💾 สำรองข้อมูล")
     try:
