@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # รหัสผ่าน
-PASSWORD = "520718"
+PASSWORD = "23669"
 
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
@@ -222,45 +222,117 @@ def export_phones_simple_txt():
     return txt_content, count
 
 def save_phones_as_excel(df):
-    """บันทึก DataFrame เป็น Excel - สำหรับการตรวจสอบปกติ"""
+    """บันทึก DataFrame เป็น Excel - แก้ไขปัญหาเลข 0 หาย"""
     output = io.BytesIO()
     
     # ตรวจสอบว่า DataFrame ว่างหรือไม่
     if df.empty or len(df) == 0:
         # สร้าง DataFrame ว่างที่มีหัวข้อคอลัมน์
-        empty_df = pd.DataFrame(columns=['phone_number', 'last_9_digits', 'source_file', 'created_date'])
-        empty_df.loc[0] = ['ไม่มีข้อมูล', '', '', '']
+        empty_df = pd.DataFrame(columns=df.columns)
+        empty_df.loc[0] = ['ไม่มีข้อมูล'] + [''] * (len(df.columns) - 1)
         df = empty_df
     
-    # ใช้ openpyxl โดยตรงเพื่อควบคุมได้มากขึ้น
+    # ใช้ openpyxl โดยตรงเพื่อควบคุม format มากขึ้น
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "เบอร์โทรทั้งหมด"
+    ws.title = "เบอร์โทร"
     
     # เขียนหัวข้อ
-    headers = ['เบอร์โทร']
-    for col_idx, header in enumerate(headers, 1):
-        ws.cell(row=1, column=col_idx, value=header)
-        # ตั้งค่า style สำหรับหัวข้อ
-        ws.cell(row=1, column=col_idx).font = openpyxl.styles.Font(bold=True)
+    for col_idx, col_name in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=col_idx, value=str(col_name))
+        cell.font = openpyxl.styles.Font(bold=True)
+        cell.fill = openpyxl.styles.PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
     
-    # เขียนข้อมูล
-    for row_idx, row_data in enumerate(df.values, 2):
+    # เขียนข้อมูล - แก้ไขปัญหาเลข 0 หาย
+    for row_idx, (_, row_data) in enumerate(df.iterrows(), 2):
         for col_idx, value in enumerate(row_data, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            # ตั้งค่า format สำหรับคอลัมน์เบอร์โทร (คอลัมน์แรก)
-            if col_idx == 1:
-                cell.number_format = '@'  # Text format
+            cell = ws.cell(row=row_idx, column=col_idx)
+            
+            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text และรักษาเลข 0
+            if col_idx == 1 and pd.notna(value) and value != '':
+                # แปลงเป็น string และรักษาเลข 0 นำหน้า
+                phone_str = str(value).strip()
+                # ตรวจสอบว่าเป็นตัวเลขและมี 0 นำหน้าหรือไม่
+                if phone_str and phone_str != 'ไม่มีข้อมูล':
+                    # บังคับให้เป็น text format
+                    cell.value = phone_str
+                    cell.number_format = '@'  # Text format
+                else:
+                    cell.value = phone_str
+            else:
+                # คอลัมน์อื่นๆ
+                if pd.notna(value):
+                    cell.value = value
+                else:
+                    cell.value = ''
     
     # ตั้งค่า column width
     column_widths = [20, 15, 20, 15]
-    for col_idx, width in enumerate(column_widths, 1):
+    for col_idx, width in enumerate(column_widths[:len(df.columns)], 1):
         col_letter = openpyxl.utils.get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = width
     
     wb.save(output)
     output.seek(0)
     return output
+
+def read_excel_preserve_format(uploaded_file):
+    """อ่านไฟล์ Excel โดยรักษา format เดิมและเลข 0 นำหน้า"""
+    try:
+        # อ่านไฟล์โดยใช้ openpyxl เพื่อรักษา format
+        wb = openpyxl.load_workbook(uploaded_file, data_only=False)
+        ws = wb.active
+        
+        # แปลงเป็น DataFrame
+        data = []
+        for row in ws.iter_rows(values_only=True):
+            data.append(row)
+        
+        df = pd.DataFrame(data)
+        
+        # ตั้งชื่อคอลัมน์แรกเป็น 'A'
+        if len(df.columns) > 0:
+            df = df.rename(columns={0: 'A'})
+            
+            # แปลงคอลัมน์ A เป็น string และรักษา format
+            df['A'] = df['A'].astype(str)
+            df['A'] = df['A'].fillna('')
+            
+            # ฟังก์ชันช่วยรักษาเลข 0 นำหน้า
+            def preserve_leading_zeros(cell_value):
+                if pd.isna(cell_value) or cell_value == '':
+                    return ''
+                # ถ้าเป็นตัวเลขและมี 0 นำหน้าใน Excel
+                try:
+                    # ตรวจสอบว่าเป็นตัวเลขและมี 0 นำหน้า
+                    cell_str = str(cell_value)
+                    if cell_str.isdigit() and len(cell_str) > 1 and cell_str[0] == '0':
+                        return cell_str
+                    else:
+                        return cell_str
+                except:
+                    return str(cell_value)
+            
+            # ปรับคอลัมน์ A เพื่อรักษาเลข 0
+            df['A'] = df['A'].apply(preserve_leading_zeros)
+        
+        return df
+        
+    except Exception as e:
+        # ถ้าใช้ openpyxl ไม่ได้ ให้ใช้ pandas แบบเดิม
+        st.warning("⚠️  ใช้การอ่านไฟล์แบบรักษา format ไม่สำเร็จ ใช้วิธีปกติแทน")
+        df = pd.read_excel(uploaded_file, dtype=str)
+        
+        # ตรวจสอบคอลัมน์
+        if 'A' not in df.columns and len(df.columns) > 0:
+            first_col = df.columns[0]
+            df = df.rename(columns={first_col: 'A'})
+        
+        # บังคับให้คอลัมน์ A เป็น string
+        df['A'] = df['A'].astype(str)
+        df['A'] = df['A'].fillna('')
+        
+        return df
 
 # เริ่มต้นฐานข้อมูล
 init_database()
@@ -284,10 +356,10 @@ with st.sidebar:
     st.metric("เบอร์โทรทั้งหมดในระบบ", f"{total_count:,}")
     st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", f"{valid_count:,}")
     
-    st.header("📥 ทดสอบระบบ")
+    st.header("📥 การโหลดข้อมูล")
     
     # ส่วนโหลดเบอร์ทั้งหมด
-    if st.button("📤 เริ่มการทดสอบ", type="primary"):
+    if st.button("📤 โหลดเบอร์โทรทั้งหมดจากระบบ", type="primary"):
         st.session_state.show_export_password = True
         st.session_state.show_clear_password = False
         st.rerun()
@@ -395,7 +467,7 @@ with st.sidebar:
         st.subheader("กรุณากรอกรหัสผ่าน")
         clear_password = st.text_input("รหัสผ่าน:", type="password", key="clear_pass")
         
-        if st.button("✅ ยืนยัน", key="confirm_clear"):
+        if st.button("✅ ยืนยันการล้าง", key="confirm_clear"):
             if clear_password == PASSWORD:
                 st.session_state.clear_authenticated = True
                 st.session_state.show_clear_password = False
@@ -459,18 +531,10 @@ if uploaded_file is not None:
         if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
             with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
                 try:
-                    # อ่านไฟล์ Excel
-                    df = pd.read_excel(uploaded_file, dtype={'A': str})
+                    # ใช้ฟังก์ชันอ่านไฟล์แบบรักษา format
+                    df = read_excel_preserve_format(uploaded_file)
                     
-                    # ตรวจสอบคอลัมน์
-                    if 'A' not in df.columns and len(df.columns) > 0:
-                        first_col = df.columns[0]
-                        df = df.rename(columns={first_col: 'A'})
-                        st.info(f"ใช้คอลัมน์ '{first_col}' เป็นคอลัมน์เบอร์โทร")
-                    
-                    # บังคับให้คอลัมน์ A เป็น string
-                    df['A'] = df['A'].astype(str)
-                    df['A'] = df['A'].fillna('')
+                    st.info(f"ใช้คอลัมน์ 'A' เป็นคอลัมน์เบอร์โทร (พบ {len(df)} แถว)")
                     
                     # ดึงตัวเลข 9 ตัวท้าย
                     df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
@@ -532,7 +596,11 @@ if uploaded_file is not None:
                         use_container_width=True
                     )
                     
-                    st.info("📝 **หมายเหตุ:** ไฟล์ผลลัพธ์จะรักษาเลข 0 หน้าเบอร์โทรโดยอัตโนมัติ")
+                    st.success("✅ **ไฟล์ผลลัพธ์จะรักษาเลข 0 หน้าเบอร์โทรโดยอัตโนมัติ**")
+                    
+                    # แสดงตัวอย่างข้อมูล
+                    with st.expander("📋 ดูตัวอย่างข้อมูลผลลัพธ์"):
+                        st.dataframe(unique_df.head(10), use_container_width=True)
                     
                 except Exception as e:
                     st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
@@ -540,14 +608,14 @@ if uploaded_file is not None:
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-    ถามบอม
+   
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ"
+    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - รักษาเลข 0 หน้าเบอร์โทร"
     "</div>",
     unsafe_allow_html=True
 )
