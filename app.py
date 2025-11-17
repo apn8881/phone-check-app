@@ -70,6 +70,24 @@ def get_database_stats():
     conn.close()
     return total_count, valid_count
 
+def get_all_phones_from_database():
+    """ดึงเบอร์โทรทั้งหมดจากฐานข้อมูล"""
+    conn = sqlite3.connect('phone_database.db')
+    
+    query = """
+    SELECT 
+        phone_number,
+        last_9_digits,
+        source_file,
+        created_date
+    FROM old_phones
+    ORDER BY created_date DESC
+    """
+    
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
 def save_phones_to_database(phone_numbers, source_file=""):
     """บันทึกเบอร์โทรลงฐานข้อมูล"""
     conn = sqlite3.connect('phone_database.db')
@@ -123,7 +141,8 @@ def save_phones_as_excel(df):
                     cell.value = ''
     
     # ตั้งค่า column width
-    ws.column_dimensions['A'].width = 20
+    for col_idx, col_name in enumerate(df.columns, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
     
     wb.save(output)
     output.seek(0)
@@ -142,6 +161,47 @@ with st.sidebar:
     total_count, valid_count = get_database_stats()
     st.metric("เบอร์โทรทั้งหมดในระบบ", total_count)
     st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", valid_count)
+    
+    st.header("📥 การโหลดข้อมูล")
+    if st.button("📤 โหลดเบอร์โทรทั้งหมดจากระบบ", type="primary"):
+        with st.spinner('กำลังโหลดข้อมูลจากฐานข้อมูล...'):
+            try:
+                # ดึงข้อมูลทั้งหมดจากฐานข้อมูล
+                all_phones_df = get_all_phones_from_database()
+                
+                if len(all_phones_df) > 0:
+                    st.success(f"✅ พบเบอร์โทรทั้งหมด {len(all_phones_df)} เบอร์")
+                    
+                    # แสดงตัวอย่างข้อมูล
+                    st.subheader("📋 ตัวอย่างข้อมูล")
+                    st.dataframe(all_phones_df.head(10), use_container_width=True)
+                    
+                    # สร้างไฟล์ Excel สำหรับดาวน์โหลด
+                    output = save_phones_as_excel(all_phones_df)
+                    
+                    # ดาวน์โหลดไฟล์
+                    st.download_button(
+                        label="💾 ดาวน์โหลดเบอร์โทรทั้งหมด",
+                        data=output.getvalue(),
+                        file_name=f"all_phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True
+                    )
+                    
+                    # แสดงสถิติเพิ่มเติม
+                    st.subheader("📈 สถิติเพิ่มเติม")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("ไฟล์ต้นทางที่แตกต่าง", all_phones_df['source_file'].nunique())
+                    with col2:
+                        st.metric("เบอร์ที่มี 9 ตัวท้ายครบ", len(all_phones_df[all_phones_df['last_9_digits'].str.len() == 9]))
+                    
+                else:
+                    st.info("ℹ️ ยังไม่มีข้อมูลเบอร์โทรในระบบ")
+                    
+            except Exception as e:
+                st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
     
     st.header("⚙️ การจัดการ")
     if st.button("🗑️ ล้างฐานข้อมูล", type="secondary"):
@@ -164,7 +224,7 @@ with st.sidebar:
             st.session_state.confirm_clear = False
             st.rerun()
 
-# ส่วนหลัก
+# ส่วนหลัก (ส่วนที่เหลือของโค้ดเดิม)
 st.markdown("---")
 
 # อัพโหลดไฟล์
@@ -289,6 +349,7 @@ with st.expander("💡 คู่มือการใช้งาน"):
     ### 💾 การจัดการข้อมูล
     
     - **บันทึกข้อมูล**: เมื่อเลือก "บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล"
+    - **โหลดข้อมูล**: ใช้ปุ่ม "โหลดเบอร์โทรทั้งหมดจากระบบ" ใน sidebar
     - **ล้างข้อมูล**: ใช้ปุ่ม "ล้างฐานข้อมูล" ใน sidebar
     - **ข้อมูลจะถูกเก็บในฐานข้อมูล SQLite** ในเซิร์ฟเวอร์
     """)
