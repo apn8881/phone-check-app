@@ -287,7 +287,7 @@ with st.sidebar:
     st.header("📥 การโหลดข้อมูล")
     
     # ส่วนโหลดเบอร์ทั้งหมด
-    if st.button("📤 โหลดเบอร์โทรทั้งหมดจากระบบ", type="primary"):
+    if st.button("📤 ทั้งหมดจากระบบ", type="primary"):
         st.session_state.show_export_password = True
         st.session_state.show_clear_password = False
         st.rerun()
