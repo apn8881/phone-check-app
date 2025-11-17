@@ -92,6 +92,21 @@ def clear_database():
     conn.commit()
     conn.close()
 
+def get_all_phones_from_database():
+    """ดึงเบอร์โทรทั้งหมดจากฐานข้อมูล"""
+    conn = sqlite3.connect('phone_database.db')
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT phone_number, last_9_digits, source_file, created_date 
+        FROM old_phones 
+        ORDER BY created_date DESC
+    """)
+    results = cursor.fetchall()
+    
+    conn.close()
+    return results
+
 def save_phones_as_excel(df):
     """บันทึก DataFrame เป็น Excel โดยบังคับให้คอลัมน์ A เป็น text"""
     output = io.BytesIO()
@@ -163,6 +178,32 @@ with st.sidebar:
         if st.button("❌ ยกเลิก"):
             st.session_state.confirm_clear = False
             st.rerun()
+    
+    st.header("👁️ ดูข้อมูล")
+    if st.button("📋 ดูเบอร์โทรทั้งหมดในระบบ", use_container_width=True):
+        all_phones = get_all_phones_from_database()
+        
+        if all_phones:
+            # สร้าง DataFrame สำหรับแสดงผล
+            df_all = pd.DataFrame(all_phones, 
+                                columns=['เบอร์โทร', '9 ตัวท้าย', 'ไฟล์ต้นทาง', 'วันที่บันทึก'])
+            
+            st.subheader(f"เบอร์โทรทั้งหมดในระบบ ({len(df_all)} เบอร์)")
+            
+            # แสดงตาราง
+            st.dataframe(df_all, use_container_width=True)
+            
+            # ดาวน์โหลดข้อมูลทั้งหมด
+            output_all = save_phones_as_excel(df_all)
+            st.download_button(
+                label="💾 ดาวน์โหลดข้อมูลทั้งหมด",
+                data=output_all.getvalue(),
+                file_name=f"all_phones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.info("⚠️ ยังไม่มีข้อมูลเบอร์โทรในระบบ")
 
 # ส่วนหลัก
 st.markdown("---")
@@ -290,6 +331,7 @@ with st.expander("💡 คู่มือการใช้งาน"):
     
     - **บันทึกข้อมูล**: เมื่อเลือก "บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล"
     - **ล้างข้อมูล**: ใช้ปุ่ม "ล้างฐานข้อมูล" ใน sidebar
+    - **ดูข้อมูลทั้งหมด**: ใช้ปุ่ม "ดูเบอร์โทรทั้งหมดในระบบ" ใน sidebar
     - **ข้อมูลจะถูกเก็บในฐานข้อมูล SQLite** ในเซิร์ฟเวอร์
     """)
 
