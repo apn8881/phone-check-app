@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import io
-import os
 from datetime import datetime
 import openpyxl
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # ตั้งค่าหน้า
 st.set_page_config(
@@ -15,8 +15,10 @@ st.set_page_config(
 
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
+    """สร้างฐานข้อมูล SQLite"""
     conn = sqlite3.connect('phone_database.db')
     cursor = conn.cursor()
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS old_phones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,38 +28,52 @@ def init_database():
             created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
     conn.commit()
     conn.close()
 
 def extract_last_9_digits(phone):
+    """ดึงตัวเลข 9 ตัวท้ายจากเบอร์โทร"""
     if pd.isna(phone) or phone == '' or phone is None:
         return ""
+    
     phone_str = str(phone).strip()
     digits_only = ''.join(filter(str.isdigit, phone_str))
-    return digits_only[-9:] if len(digits_only) >= 9 else digits_only
+    
+    if len(digits_only) >= 9:
+        return digits_only[-9:]
+    else:
+        return digits_only
 
 def get_all_last_9_digits():
+    """ดึงตัวเลข 9 ตัวท้ายทั้งหมดจากฐานข้อมูล"""
     conn = sqlite3.connect('phone_database.db')
     cursor = conn.cursor()
+    
     cursor.execute("SELECT last_9_digits FROM old_phones WHERE LENGTH(last_9_digits) = 9")
     results = cursor.fetchall()
+    
     conn.close()
     return set([result[0] for result in results])
 
 def get_database_stats():
+    """ดึงสถิติจากฐานข้อมูล"""
     conn = sqlite3.connect('phone_database.db')
     cursor = conn.cursor()
+    
     cursor.execute("SELECT COUNT(*) FROM old_phones")
     total_count = cursor.fetchone()[0]
+    
     cursor.execute("SELECT COUNT(*) FROM old_phones WHERE LENGTH(last_9_digits) = 9")
     valid_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(DISTINCT source_file) FROM old_phones")
-    file_count = cursor.fetchone()[0]
+    
     conn.close()
-    return total_count, valid_count, file_count
+    return total_count, valid_count
 
 def save_phones_to_database(phone_numbers, source_file=""):
+    """บันทึกเบอร์โทรลงฐานข้อมูล"""
     conn = sqlite3.connect('phone_database.db')
+    
     for phone in phone_numbers:
         last_9 = extract_last_9_digits(phone)
         if len(last_9) == 9:
@@ -65,16 +81,19 @@ def save_phones_to_database(phone_numbers, source_file=""):
                 "INSERT OR IGNORE INTO old_phones (phone_number, last_9_digits, source_file) VALUES (?, ?, ?)",
                 (str(phone), last_9, source_file)
             )
+    
     conn.commit()
     conn.close()
 
 def clear_database():
+    """ล้างฐานข้อมูล"""
     conn = sqlite3.connect('phone_database.db')
     conn.execute("DELETE FROM old_phones")
     conn.commit()
     conn.close()
 
 def save_phones_as_excel(df):
+    """บันทึก DataFrame เป็น Excel โดยบังคับให้คอลัมน์ A เป็น text"""
     output = io.BytesIO()
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -83,23 +102,29 @@ def save_phones_as_excel(df):
     for col_idx, col_name in enumerate(df.columns, 1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
     
-    # เขียนข้อมูล
+    # เขียนข้อมูลแถวที่ 2 ขึ้นไป
     for row_idx, row_data in enumerate(df.values, 2):
         for col_idx, value in enumerate(row_data, 1):
             cell = ws.cell(row=row_idx, column=col_idx)
-            if col_idx == 1:  # คอลัมน์เบอร์โทร
+            
+            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text
+            if col_idx == 1:
                 if pd.notna(value) and value != '':
+                    # ตั้งค่าเป็น text format โดยไม่ใช้ apostrophe
                     cell.value = str(value)
-                    cell.number_format = '@'
+                    cell.number_format = '@'  # Text format
                 else:
                     cell.value = ''
             else:
+                # คอลัมน์อื่นๆ
                 if pd.notna(value):
                     cell.value = value
                 else:
                     cell.value = ''
     
+    # ตั้งค่า column width
     ws.column_dimensions['A'].width = 20
+    
     wb.save(output)
     output.seek(0)
     return output
@@ -107,168 +132,19 @@ def save_phones_as_excel(df):
 # เริ่มต้นฐานข้อมูล
 init_database()
 
-# ใช้ CSS เพื่อย้ายแท็บไปด้านซ้าย
-st.markdown("""
-<style>
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        white-space: pre-wrap;
-        background-color: #f0f2f6;
-        border-radius: 4px 4px 0px 0px;
-        gap: 1px;
-        padding-top: 10px;
-        padding-bottom: 10px;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #ffffff;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # UI
 st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ")
+st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
 
-# แท็บหลัก - ใช้ CSS เพื่อจัดตำแหน่ง
-tab1, tab2, tab3 = st.tabs(["🔍 ตรวจสอบเบอร์โทร", "📊 ดูข้อมูลในระบบ", "⚙️ การจัดการ"])
-
-with tab1:
-    st.header("ตรวจสอบเบอร์โทรซ้ำ")
-    st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
+# Sidebar สำหรับสถิติและการจัดการ
+with st.sidebar:
+    st.header("📊 สถิติ")
+    total_count, valid_count = get_database_stats()
+    st.metric("เบอร์โทรทั้งหมดในระบบ", total_count)
+    st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", valid_count)
     
-    uploaded_file = st.file_uploader("เลือกไฟล์ Excel", type=['xlsx', 'xls'])
-    
-    if uploaded_file is not None:
-        col1, col2 = st.columns(2)
-        with col1:
-            save_to_db = st.checkbox("💾 บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล", value=True)
-        with col2:
-            if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
-                with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
-                    try:
-                        df = pd.read_excel(uploaded_file, dtype={'A': str})
-                        
-                        if 'A' not in df.columns and len(df.columns) > 0:
-                            first_col = df.columns[0]
-                            df = df.rename(columns={first_col: 'A'})
-                            st.info(f"ใช้คอลัมน์ '{first_col}' เป็นคอลัมน์เบอร์โทร")
-                        
-                        df['A'] = df['A'].astype(str).fillna('')
-                        df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
-                        existing_last_9_digits = get_all_last_9_digits()
-                        df['is_duplicate'] = df['last_9_digits'].isin(existing_last_9_digits)
-                        unique_df = df[~df['is_duplicate']].copy()
-                        
-                        for col in ['last_9_digits', 'is_duplicate']:
-                            if col in unique_df.columns:
-                                unique_df = unique_df.drop(columns=[col])
-                        
-                        if save_to_db:
-                            save_phones_to_database(df['A'].tolist(), uploaded_file.name)
-                            st.success("💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย")
-                        
-                        st.success("✅ ตรวจสอบเสร็จสิ้น!")
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("เบอร์โทรทั้งหมด", len(df))
-                        with col2:
-                            st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
-                        with col3:
-                            st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
-                        
-                        original_name = uploaded_file.name
-                        if '.' in original_name:
-                            name_without_ext = original_name.rsplit('.', 1)[0]
-                            extension = original_name.rsplit('.', 1)[1]
-                            download_filename = f"{name_without_ext}-Cut.{extension}"
-                        else:
-                            download_filename = f"{original_name}-Cut.xlsx"
-                        
-                        output = save_phones_as_excel(unique_df)
-                        
-                        st.download_button(
-                            label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
-                            data=output.getvalue(),
-                            file_name=download_filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            type="primary",
-                            use_container_width=True
-                        )
-                        
-                    except Exception as e:
-                        st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
-
-with tab2:
-    st.header("ข้อมูลเบอร์โทรในระบบ")
-    
-    try:
-        conn = sqlite3.connect('phone_database.db')
-        cursor = conn.cursor()
-        
-        # นับสถิติ
-        cursor.execute("SELECT COUNT(*) FROM old_phones")
-        total_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM old_phones WHERE LENGTH(last_9_digits) = 9")
-        valid_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(DISTINCT source_file) FROM old_phones")
-        file_count = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("เบอร์โทรทั้งหมด", total_count)
-        with col2:
-            st.metric("เบอร์ 9 ตัวสมบูรณ์", valid_count)
-        with col3:
-            st.metric("ไฟล์ต้นทาง", file_count)
-        
-        if st.button("🔄 โหลดข้อมูลทั้งหมด"):
-            conn = sqlite3.connect('phone_database.db')
-            df_all_phones = pd.read_sql_query("""
-                SELECT 
-                    phone_number as 'เบอร์โทร',
-                    last_9_digits as '9 ตัวท้าย',
-                    source_file as 'ไฟล์ต้นทาง',
-                    created_date as 'วันที่บันทึก'
-                FROM old_phones 
-                ORDER BY created_date DESC
-            """, conn)
-            conn.close()
-            
-            if len(df_all_phones) > 0:
-                st.success(f"พบเบอร์โทรทั้งหมด {len(df_all_phones)} เบอร์")
-                st.dataframe(df_all_phones, use_container_width=True)
-                
-                # ดาวน์โหลด
-                output_all = io.BytesIO()
-                df_all_phones.to_excel(output_all, index=False)
-                output_all.seek(0)
-                
-                st.download_button(
-                    label="📥 ดาวน์โหลดข้อมูลทั้งหมด",
-                    data=output_all.getvalue(),
-                    file_name=f"all_phones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else:
-                st.info("⚠️ ยังไม่มีเบอร์โทรในระบบ")
-                
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาด: {str(e)}")
-
-with tab3:
-    st.header("การจัดการระบบ")
-    
-    st.subheader("🗑️ ล้างฐานข้อมูล")
-    st.warning("การล้างฐานข้อมูลจะทำให้ข้อมูลเบอร์โทรทั้งหมดหายไป!")
-    
-    if st.button("ล้างฐานข้อมูลทั้งหมด", type="secondary"):
+    st.header("⚙️ การจัดการ")
+    if st.button("🗑️ ล้างฐานข้อมูล", type="secondary"):
         if st.session_state.get('confirm_clear', False):
             clear_database()
             st.success("ล้างฐานข้อมูลเรียบร้อย!")
@@ -276,52 +152,146 @@ with tab3:
             st.rerun()
         else:
             st.session_state.confirm_clear = True
-            st.error("⚠️ คลิกอีกครั้งเพื่อยืนยันการล้างฐานข้อมูล!")
+            st.warning("คลิกอีกครั้งเพื่อยืนยันการล้างฐานข้อมูล")
     
     if st.session_state.get('confirm_clear', False):
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ ยืนยันการล้าง", type="primary"):
-                clear_database()
-                st.success("ล้างฐานข้อมูลเรียบร้อย!")
-                st.session_state.confirm_clear = False
-                st.rerun()
-        with col2:
-            if st.button("❌ ยกเลิก"):
-                st.session_state.confirm_clear = False
-                st.rerun()
+        if st.button("✅ ยืนยันการล้าง"):
+            clear_database()
+            st.success("ล้างฐานข้อมูลเรียบร้อย!")
+            st.session_state.confirm_clear = False
+            st.rerun()
+        if st.button("❌ ยกเลิก"):
+            st.session_state.confirm_clear = False
+            st.rerun()
+
+# ส่วนหลัก
+st.markdown("---")
+
+# อัพโหลดไฟล์
+uploaded_file = st.file_uploader(
+    "**เลือกไฟล์ Excel**", 
+    type=['xlsx', 'xls'],
+    help="ไฟล์ Excel ต้องมีคอลัมน์ A หรือคอลัมน์แรกเป็นเบอร์โทร"
+)
+
+if uploaded_file is not None:
+    # ตั้งค่า options
+    col1, col2 = st.columns(2)
     
-    st.subheader("💾 สำรองข้อมูล")
+    with col1:
+        save_to_db = st.checkbox(
+            "💾 บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล", 
+            value=True,
+            help="บันทึกเบอร์โทรจากไฟล์นี้เพื่อใช้ตรวจสอบซ้ำในครั้งต่อไป"
+        )
     
-    # ฟังก์ชันดาวน์โหลดฐานข้อมูลที่แก้ไขแล้ว
-    def download_database():
-        try:
-            # ตรวจสอบว่าไฟล์ฐานข้อมูลมีอยู่
-            if os.path.exists('phone_database.db'):
-                with open('phone_database.db', 'rb') as f:
-                    db_data = f.read()
-                
-                # สร้างปุ่มดาวน์โหลด
-                st.download_button(
-                    label="📥 ดาวน์โหลดไฟล์ฐานข้อมูล",
-                    data=db_data,
-                    file_name=f"phone_database_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
-                    mime="application/octet-stream",
-                    key="database_download"
-                )
-                st.success("✅ พร้อมดาวน์โหลดฐานข้อมูล")
-            else:
-                st.error("❌ ไม่พบไฟล์ฐานข้อมูล")
-                
-        except Exception as e:
-            st.error(f"❌ ไม่สามารถดาวน์โหลดฐานข้อมูล: {str(e)}")
+    with col2:
+        if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
+            with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
+                try:
+                    # อ่านไฟล์ Excel โดยรักษา format เดิม
+                    df = pd.read_excel(uploaded_file, dtype={'A': str})
+                    
+                    # ตรวจสอบคอลัมน์
+                    if 'A' not in df.columns and len(df.columns) > 0:
+                        first_col = df.columns[0]
+                        df = df.rename(columns={first_col: 'A'})
+                        st.info(f"ใช้คอลัมน์ '{first_col}' เป็นคอลัมน์เบอร์โทร")
+                    
+                    # บังคับให้คอลัมน์ A เป็น string
+                    df['A'] = df['A'].astype(str)
+                    df['A'] = df['A'].fillna('')
+                    
+                    # ดึงตัวเลข 9 ตัวท้าย
+                    df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
+                    
+                    # ดึงข้อมูลเบอร์เก่าจากฐานข้อมูล
+                    existing_last_9_digits = get_all_last_9_digits()
+                    
+                    # ตรวจสอบซ้ำ
+                    df['is_duplicate'] = df['last_9_digits'].isin(existing_last_9_digits)
+                    
+                    # กรองข้อมูลที่ไม่ซ้ำ
+                    unique_df = df[~df['is_duplicate']].copy()
+                    
+                    # ลบคอลัมน์ชั่วคราว
+                    columns_to_drop = ['last_9_digits', 'is_duplicate']
+                    for col in columns_to_drop:
+                        if col in unique_df.columns:
+                            unique_df = unique_df.drop(columns=[col])
+                    
+                    # บันทึกลงฐานข้อมูลถ้าต้องการ
+                    if save_to_db:
+                        save_phones_to_database(df['A'].tolist(), uploaded_file.name)
+                        st.success("💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย")
+                    
+                    # แสดงผลลัพธ์
+                    st.success("✅ ตรวจสอบเสร็จสิ้น!")
+                    
+                    # สรุปผล
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("เบอร์โทรทั้งหมด", len(df))
+                    with col2:
+                        st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
+                    with col3:
+                        st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
+                    
+                    # ดาวน์โหลดไฟล์ผลลัพธ์
+                    st.markdown("---")
+                    st.subheader("📥 ดาวน์โหลดไฟล์ผลลัพธ์")
+                    
+                    # สร้างชื่อไฟล์ตามต้นฉบับ-Cut
+                    original_name = uploaded_file.name
+                    if '.' in original_name:
+                        name_without_ext = original_name.rsplit('.', 1)[0]
+                        extension = original_name.rsplit('.', 1)[1]
+                        download_filename = f"{name_without_ext}-Cut.{extension}"
+                    else:
+                        download_filename = f"{original_name}-Cut.xlsx"
+                    
+                    # บันทึกเป็น Excel
+                    output = save_phones_as_excel(unique_df)
+                    
+                    st.download_button(
+                        label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
+                        data=output.getvalue(),
+                        file_name=download_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True
+                    )
+                    
+                    st.info("📝 **หมายเหตุ:** ไฟล์ผลลัพธ์จะรักษาเลข 0 หน้าเบอร์โทรโดยอัตโนมัติ")
+                    
+                except Exception as e:
+                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+# ส่วนคำแนะนำ
+with st.expander("💡 คู่มือการใช้งาน"):
+    st.markdown("""
+    ### 📝 วิธีการใช้โปรแกรม
     
-    # เรียกใช้ฟังก์ชันดาวน์โหลด
-    download_database()
+    1. **เตรียมไฟล์ Excel**: ไฟล์ต้องมีคอลัมน์ **A** หรือคอลัมน์แรกเป็นเบอร์โทร
+    2. **อัพโหลดไฟล์**: คลิกปุ่ม "Browse files" เพื่อเลือกไฟล์ Excel
+    3. **เริ่มตรวจสอบ**: คลิกปุ่ม "เริ่มตรวจสอบเบอร์โทรซ้ำ"
+    4. **ดาวน์โหลดผลลัพธ์**: ดาวน์โหลดไฟล์ที่มีเฉพาะเบอร์ที่ไม่ซ้ำ
     
-    st.subheader("ℹ️ ข้อมูลระบบ")
-    st.write(f"**ขนาดไฟล์ฐานข้อมูล:** {os.path.getsize('phone_database.db') if os.path.exists('phone_database.db') else 0} bytes")
-    st.write(f"**อัพเดทล่าสุด:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    ### 🔍 หลักการทำงาน
+    
+    - ตรวจสอบซ้ำโดยใช้ **ตัวเลข 9 ตัวท้าย** ของเบอร์โทร
+    - ตัวอย่าง: เบอร์ `081-234-5678` จะใช้ `123456789` ในการตรวจสอบ
+    - เบอร์ที่ซ้ำจะถูกกรองออกจากผลลัพธ์
+    - **รักษาเลข 0 หน้าเบอร์โทร** โดยอัตโนมัติ
+    
+    ### 💾 การจัดการข้อมูล
+    
+    - **บันทึกข้อมูล**: เมื่อเลือก "บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล"
+    - **ล้างข้อมูล**: ใช้ปุ่ม "ล้างฐานข้อมูล" ใน sidebar
+    - **ข้อมูลจะถูกเก็บในฐานข้อมูล SQLite** ในเซิร์ฟเวอร์
+    """)
 
 # Footer
 st.markdown("---")
