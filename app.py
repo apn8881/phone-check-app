@@ -103,7 +103,7 @@ def get_phones_batch(limit=1000, offset=0):
         source_file,
         created_date
     FROM old_phones
-    ORDER BY created_date DESC
+    ORDER BY source_file, phone_number
     LIMIT ? OFFSET ?
     """
     
@@ -143,11 +143,9 @@ def export_all_phones():
     query = """
     SELECT 
         phone_number,
-        last_9_digits,
-        source_file,
-        created_date
+        source_file
     FROM old_phones
-    ORDER BY created_date DESC
+    ORDER BY source_file, phone_number
     """
     
     df = pd.read_sql_query(query, conn)
@@ -155,42 +153,35 @@ def export_all_phones():
     return df
 
 def export_phones_txt():
-    """ส่งออกข้อมูลทั้งหมดเป็นไฟล์ txt - เบอร์โทรและไฟล์ต้นทางเท่านั้น"""
+    """ส่งออกข้อมูลทั้งหมดเป็นไฟล์ txt - ในรูปแบบ เบอร์โทร-ชื่อไฟล์"""
     conn = sqlite3.connect('phone_database.db', timeout=30)
     cursor = conn.cursor()
     
-    # ดึงข้อมูลเฉพาะเบอร์โทรและไฟล์ต้นทาง
+    # ดึงข้อมูลเรียงตามไฟล์ต้นทางและเบอร์โทร
     cursor.execute("""
         SELECT phone_number, source_file 
         FROM old_phones 
-        ORDER BY created_date DESC
+        ORDER BY source_file, phone_number
     """)
     
     # สร้างเนื้อหา txt
     txt_content = "เบอร์โทรทั้งหมดในระบบ\n"
     txt_content += "=" * 50 + "\n"
     txt_content += f"วันที่ส่งออก: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    txt_content += "รูปแบบ: เบอร์โทร-ชื่อไฟล์\n"
     txt_content += "=" * 50 + "\n\n"
     
-    # นับจำนวนและจัดกลุ่มตามไฟล์ต้นทาง
+    # นับจำนวน
     count = 0
-    current_source = ""
     
     for row in cursor:
         phone, source = row
-        if source != current_source:
-            if current_source != "":
-                txt_content += "\n"
-            txt_content += f"📁 ไฟล์: {source}\n"
-            txt_content += "-" * 40 + "\n"
-            current_source = source
-        
-        txt_content += f"{phone}\n"
+        # เขียนในรูปแบบ เบอร์โทร-ชื่อไฟล์
+        txt_content += f"{phone}-{source}\n"
         count += 1
     
     txt_content += f"\n{'='*50}\n"
     txt_content += f"รวมทั้งหมด: {count} เบอร์\n"
-    txt_content += f"ไฟล์ต้นทางทั้งหมด: {cursor.rowcount} ไฟล์\n"
     
     conn.close()
     return txt_content, count
@@ -200,8 +191,8 @@ def export_phones_simple_txt():
     conn = sqlite3.connect('phone_database.db', timeout=30)
     cursor = conn.cursor()
     
-    # ดึงเฉพาะเบอร์โทร
-    cursor.execute("SELECT phone_number FROM old_phones ORDER BY created_date DESC")
+    # ดึงเฉพาะเบอร์โทร เรียงตามไฟล์ต้นทาง
+    cursor.execute("SELECT phone_number FROM old_phones ORDER BY source_file, phone_number")
     
     # สร้างเนื้อหา txt แบบง่าย (เบอร์โทรอย่างเดียว)
     txt_content = f"# เบอร์โทรทั้งหมดในระบบ\n"
@@ -418,28 +409,28 @@ with st.sidebar:
         # ตัวเลือกการดาวน์โหลด
         download_option = st.radio(
             "รูปแบบไฟล์:",
-            ["📄 TXT - เบอร์โทรอย่างเดียว (เร็ว)", "📋 TXT - เบอร์โทรกับไฟล์ต้นทาง"],
+            ["📄 TXT - เบอร์โทรอย่างเดียว", "📋 TXT - เบอร์โทร-ชื่อไฟล์"],
             index=1
         )
         
         if st.button("🚀 สร้างไฟล์ดาวน์โหลด", key="generate_download"):
             with st.spinner('กำลังสร้างไฟล์...'):
                 try:
-                    if download_option == "📄 TXT - เบอร์โทรอย่างเดียว (เร็ว)":
+                    if download_option == "📄 TXT - เบอร์โทรอย่างเดียว":
                         txt_content, count = export_phones_simple_txt()
                         file_type = "text/plain"
-                        file_name = f"phones_export_simple_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                        file_name = f"phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
                         st.success(f"✅ สร้างไฟล์ TXT สำเร็จ ({count} เบอร์)")
                         
-                    else:  # TXT - เบอร์โทรกับไฟล์ต้นทาง
+                    else:  # TXT - เบอร์โทร-ชื่อไฟล์
                         txt_content, count = export_phones_txt()
                         file_type = "text/plain"
-                        file_name = f"phones_export_with_source_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                        file_name = f"phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
                         st.success(f"✅ สร้างไฟล์ TXT สำเร็จ ({count} เบอร์)")
                     
                     # ปุ่มดาวน์โหลด
                     st.download_button(
-                        label=f"📥 ดาวน์โหลดไฟล์",
+                        label=f"📥 ดาวน์โหลดไฟล์ ({count} เบอร์)",
                         data=txt_content,
                         file_name=file_name,
                         mime=file_type,
@@ -608,14 +599,13 @@ if uploaded_file is not None:
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-   
-    """)
+   """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - รักษาเลข 0 หน้าเบอร์โทร"
+    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - รูปแบบ เบอร์โทร-ชื่อไฟล์"
     "</div>",
     unsafe_allow_html=True
 )
