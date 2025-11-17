@@ -92,84 +92,6 @@ def clear_database():
     conn.commit()
     conn.close()
 
-def save_phones_as_excel(df):
-    """บันทึก DataFrame เป็น Excel โดยบังคับให้คอลัมน์ A เป็น text"""
-    output = io.BytesIO()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    
-    # เขียนหัวข้อ
-    for col_idx, col_name in enumerate(df.columns, 1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        if col_idx == 1:  # คอลัมน์ A
-            cell.number_format = '@'
-    
-    # เขียนข้อมูล
-    for row_idx, row_data in enumerate(df.values, 2):
-        for col_idx, value in enumerate(row_data, 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            
-            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text
-            if col_idx == 1:
-                cell.number_format = '@'  # Text format
-                if pd.notna(value) and value != '':
-                    # ใช้วิธีบังคับ text โดยเพิ่ม apostrophe
-                    phone_str = str(value).strip()
-                    # บังคับเป็น text โดยตรง
-                    cell.value = phone_str
-                    # ตั้งค่าเป็น text แบบ explicit
-                    cell.data_type = 's'  # string
-                else:
-                    cell.value = ''
-            else:
-                # คอลัมน์อื่นๆ
-                if pd.notna(value):
-                    cell.value = value
-                else:
-                    cell.value = ''
-    
-    # ตั้งค่า column width และ protection
-    ws.column_dimensions['A'].width = 20  # ความกว้างคอลัมน์ A
-    
-    wb.save(output)
-    output.seek(0)
-    return output
-
-def save_phones_as_excel_alternative(df):
-    """วิธีสำรอง: ใช้ CSV ก่อนแล้วแปลงเป็น Excel"""
-    import tempfile
-    import os
-    
-    # สร้างไฟล์ CSV ชั่วคราว
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8-sig') as f:
-        # บันทึกเป็น CSV ด้วย encoding ที่รักษาเลข 0
-        df.to_csv(f, index=False)
-        temp_csv_path = f.name
-    
-    # อ่าน CSV กลับมาเป็น Excel
-    output = io.BytesIO()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    
-    # อ่านข้อมูลจาก CSV
-    with open(temp_csv_path, 'r', encoding='utf-8-sig') as f:
-        lines = f.readlines()
-    
-    # เขียนข้อมูลลง Excel
-    for row_idx, line in enumerate(lines, 1):
-        values = line.strip().split(',')
-        for col_idx, value in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            if col_idx == 1 and row_idx > 1:  # คอลัมน์ A (ยกเว้นหัวข้อ)
-                cell.number_format = '@'
-    
-    # ลบไฟล์ชั่วคราว
-    os.unlink(temp_csv_path)
-    
-    wb.save(output)
-    output.seek(0)
-    return output
-
 def save_as_csv(df):
     """บันทึกเป็น CSV แบบรักษาเลข 0"""
     output = io.BytesIO()
@@ -254,17 +176,6 @@ if uploaded_file is not None:
                     df['A'] = df['A'].astype(str)
                     df['A'] = df['A'].fillna('')
                     
-                    # แสดงตัวอย่างข้อมูลต้นฉบับ
-                    with st.expander("📋 ดูตัวอย่างข้อมูลที่อัพโหลด"):
-                        st.write("**ตัวอย่างเบอร์โทรต้นฉบับ (5 แถวแรก):**")
-                        st.dataframe(df[['A']].head(), use_container_width=True)
-                        
-                        # แสดงรายละเอียดเพิ่มเติม
-                        st.write("**รายละเอียดเบอร์โทร:**")
-                        sample_phones = df['A'].head(5).tolist()
-                        for i, phone in enumerate(sample_phones, 1):
-                            st.write(f"{i}. `{phone}` (ความยาว: {len(str(phone))} ตัว)")
-                    
                     # ดึงตัวเลข 9 ตัวท้าย
                     df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
                     
@@ -296,68 +207,36 @@ if uploaded_file is not None:
                     with col1:
                         st.metric("เบอร์โทรทั้งหมด", len(df))
                     with col2:
-                        st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df), delta=f"+{len(unique_df)}")
+                        st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
                     with col3:
-                        st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df), delta=f"-{len(df) - len(unique_df)}")
-                    
-                    # แสดงตัวอย่างผลลัพธ์
-                    with st.expander("👀 ดูตัวอย่างผลลัพธ์ (เบอร์ที่ไม่ซ้ำ)"):
-                        st.dataframe(unique_df.head(10), use_container_width=True)
-                        
-                        # ตรวจสอบการรักษาเลข 0
-                        st.write("**การตรวจสอบเลข 0 หน้าเบอร์โทร:**")
-                        if len(unique_df) > 0:
-                            sample_result_phones = unique_df['A'].head(3).tolist()
-                            for i, phone in enumerate(sample_result_phones, 1):
-                                phone_str = str(phone)
-                                starts_with_zero = phone_str.startswith('0') if phone_str else False
-                                st.write(f"{i}. `{phone}` - ขึ้นต้นด้วย 0: {starts_with_zero}")
+                        st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
                     
                     # ดาวน์โหลดไฟล์ผลลัพธ์
                     st.markdown("---")
                     st.subheader("📥 ดาวน์โหลดไฟล์ผลลัพธ์")
                     
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    # สร้างชื่อไฟล์ตามต้นฉบับ-Cut
+                    original_name = uploaded_file.name
+                    if '.' in original_name:
+                        name_without_ext = original_name.rsplit('.', 1)[0]
+                        extension = original_name.rsplit('.', 1)[1]
+                        download_filename = f"{name_without_ext}-Cut.{extension}"
+                    else:
+                        download_filename = f"{original_name}-Cut.xlsx"
                     
-                    # ตัวเลือกการดาวน์โหลด
-                    download_option = st.radio(
-                        "เลือกรูปแบบไฟล์:",
-                        ["Excel (พยายามรักษาเลข 0)", "CSV (รักษาเลข 0 แน่นอน)"],
-                        index=1
+                    # บันทึกเป็น CSV
+                    output = save_as_csv(unique_df)
+                    
+                    st.download_button(
+                        label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
+                        data=output.getvalue(),
+                        file_name=download_filename,
+                        mime="text/csv",
+                        type="primary",
+                        use_container_width=True
                     )
                     
-                    if download_option == "Excel (พยายามรักษาเลข 0)":
-                        # ใช้วิธีแรก
-                        try:
-                            output = save_phones_as_excel(unique_df)
-                            download_filename = f"filtered_{timestamp}_{uploaded_file.name}"
-                            
-                            st.download_button(
-                                label="💾 ดาวน์โหลดไฟล์ Excel",
-                                data=output.getvalue(),
-                                file_name=download_filename,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                type="primary",
-                                use_container_width=True
-                            )
-                        except Exception as e:
-                            st.error(f"ไม่สามารถสร้างไฟล์ Excel: {str(e)}")
-                            st.info("กรุณาใช้ตัวเลือก CSV แทน")
-                    
-                    else:  # CSV
-                        output = save_as_csv(unique_df)
-                        download_filename = f"filtered_{timestamp}_{uploaded_file.name.replace('.xlsx', '.csv').replace('.xls', '.csv')}"
-                        
-                        st.download_button(
-                            label="💾 ดาวน์โหลดไฟล์ CSV (แนะนำ - รักษาเลข 0 แน่นอน)",
-                            data=output.getvalue(),
-                            file_name=download_filename,
-                            mime="text/csv",
-                            type="primary",
-                            use_container_width=True
-                        )
-                    
-                    st.info("💡 **คำแนะนำ:** ใช้ไฟล์ CSV เพื่อความมั่นใจว่าเลข 0 หน้าจะไม่หาย")
+                    st.info("💡 **คำแนะนำ:** ไฟล์ CSV รักษาเลข 0 หน้าเบอร์โทรได้ดีกว่า Excel")
                     
                 except Exception as e:
                     st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
@@ -367,23 +246,24 @@ if uploaded_file is not None:
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-    ### 🔧 วิธีรักษาเลข 0 หน้าเบอร์โทร
-    
-    **ปัญหา:** Excel มักจะตัดเลข 0 ออกเพราะคิดว่าเป็นตัวเลข
-    
-    **วิธีแก้ไข:**
-    1. **ใช้ไฟล์ CSV** (แนะนำ) - รักษาเลข 0 ได้แน่นอน
-    2. **เปิดไฟล์ Excel แล้วตั้ง format เป็น Text:**
-       - เลือกคอลัมน์ A ทั้งหมด
-       - คลิกขวา → Format Cells → Text
-       - หรือเพิ่ม apostrophe (') หน้าเบอร์โทร
-    
     ### 📝 วิธีการใช้โปรแกรม
     
     1. **เตรียมไฟล์ Excel**: ไฟล์ต้องมีคอลัมน์ **A** หรือคอลัมน์แรกเป็นเบอร์โทร
     2. **อัพโหลดไฟล์**: คลิกปุ่ม "Browse files" เพื่อเลือกไฟล์ Excel
     3. **เริ่มตรวจสอบ**: คลิกปุ่ม "เริ่มตรวจสอบเบอร์โทรซ้ำ"
-    4. **ดาวน์โหลดผลลัพธ์**: เลือกดาวน์โหลดเป็น **CSV** เพื่อรักษาเลข 0
+    4. **ดาวน์โหลดผลลัพธ์**: ดาวน์โหลดไฟล์ที่มีเฉพาะเบอร์ที่ไม่ซ้ำ
+    
+    ### 🔍 หลักการทำงาน
+    
+    - ตรวจสอบซ้ำโดยใช้ **ตัวเลข 9 ตัวท้าย** ของเบอร์โทร
+    - ตัวอย่าง: เบอร์ `081-234-5678` จะใช้ `123456789` ในการตรวจสอบ
+    - เบอร์ที่ซ้ำจะถูกกรองออกจากผลลัพธ์
+    
+    ### 💾 การจัดการข้อมูล
+    
+    - **บันทึกข้อมูล**: เมื่อเลือก "บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล"
+    - **ล้างข้อมูล**: ใช้ปุ่ม "ล้างฐานข้อมูล" ใน sidebar
+    - **ข้อมูลจะถูกเก็บในฐานข้อมูล SQLite** ในเซิร์ฟเวอร์
     """)
 
 # Footer
