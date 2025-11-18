@@ -6,6 +6,7 @@ from datetime import datetime
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 import os
+import shutil
 
 # ตั้งค่า path ถาวรสำหรับฐานข้อมูล
 DATA_DIR = "permanent_data"
@@ -43,6 +44,72 @@ def init_database():
     
     conn.commit()
     conn.close()
+
+def auto_backup():
+    """สำรองข้อมูลอัตโนมัติทุกครั้งที่มีการใช้งาน - เก็บไม่จำกัด"""
+    backup_dir = os.path.join(DATA_DIR, "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    
+    # ตรวจสอบว่ามีไฟล์ฐานข้อมูลหรือไม่
+    if not os.path.exists(DB_PATH):
+        return None
+    
+    # สร้างชื่อไฟล์ backup
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_path = os.path.join(backup_dir, f"auto_backup_{timestamp}.db")
+    
+    try:
+        # คัดลอกไฟล์ฐานข้อมูล
+        shutil.copy2(DB_PATH, backup_path)
+        
+        # ✅ ไม่ลบ backup เก่า - เก็บได้ไม่จำกัด
+        st.sidebar.success(f"💾 Auto-backup created: {os.path.basename(backup_path)}")
+        
+        return backup_path
+    except Exception as e:
+        st.sidebar.error(f"❌ Backup failed: {str(e)}")
+        return None
+
+def get_backup_stats():
+    """ดึงสถิติ backup"""
+    backup_dir = os.path.join(DATA_DIR, "backups")
+    if not os.path.exists(backup_dir):
+        return 0, 0
+    
+    backup_files = []
+    total_size = 0
+    
+    for file in os.listdir(backup_dir):
+        if file.endswith('.db') and ('auto_backup_' in file or 'backup_' in file or 'manual_' in file):
+            file_path = os.path.join(backup_dir, file)
+            file_size = os.path.getsize(file_path)
+            file_time = os.path.getmtime(file_path)
+            
+            backup_files.append({
+                'name': file,
+                'path': file_path,
+                'size': file_size,
+                'time': datetime.fromtimestamp(file_time),
+                'size_readable': format_file_size(file_size)
+            })
+            total_size += file_size
+    
+    # เรียงลำดับจากใหม่ไปเก่า
+    backup_files.sort(key=lambda x: x['time'], reverse=True)
+    return backup_files, total_size
+
+def format_file_size(size_bytes):
+    """แปลงขนาดไฟล์ให้อ่านง่าย"""
+    if size_bytes == 0:
+        return "0 B"
+    
+    size_names = ["B", "KB", "MB", "GB"]
+    i = 0
+    while size_bytes >= 1024 and i < len(size_names)-1:
+        size_bytes /= 1024.0
+        i += 1
+    
+    return f"{size_bytes:.2f} {size_names[i]}"
 
 def extract_last_9_digits(phone):
     """ดึงตัวเลข 9 ตัวท้ายจากเบอร์โทร"""
@@ -117,29 +184,46 @@ def get_phones_batch(limit=1000, offset=0):
     return df
 
 def save_phones_to_database(phone_numbers, source_file=""):
-    """บันทึกเบอร์โทรลงฐานข้อมูล"""
+    """บันทึกเบอร์โทรลงฐานข้อมูล + สำรองข้อมูลอัตโนมัติ"""
     conn = sqlite3.connect(DB_PATH, timeout=30)
     
+    new_records_count = 0
     for phone in phone_numbers:
         last_9 = extract_last_9_digits(phone)
         if len(last_9) == 9:
             try:
-                conn.execute(
+                cursor = conn.execute(
                     "INSERT OR IGNORE INTO old_phones (phone_number, last_9_digits, source_file) VALUES (?, ?, ?)",
                     (str(phone), last_9, source_file)
                 )
+                if cursor.rowcount > 0:
+                    new_records_count += 1
             except:
                 continue
     
     conn.commit()
     conn.close()
+    
+    # สำรองข้อมูลอัตโนมัติถ้ามีข้อมูลใหม่
+    if new_records_count > 0:
+        backup_path = auto_backup()
+        if backup_path:
+            st.session_state.last_backup_time = datetime.now()
+    
+    return new_records_count
 
 def clear_database():
-    """ล้างฐานข้อมูล"""
+    """ล้างฐานข้อมูล + สำรองข้อมูลก่อนล้าง"""
+    # สำรองข้อมูลก่อนล้าง
+    backup_path = auto_backup()
+    
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("DELETE FROM old_phones")
     conn.commit()
     conn.close()
+    
+    if backup_path:
+        st.sidebar.info(f"📋 Pre-clear backup: {os.path.basename(backup_path)}")
 
 def export_all_phones():
     """ส่งออกข้อมูลทั้งหมด"""
@@ -330,40 +414,47 @@ def read_excel_preserve_format(uploaded_file):
         
         return df
 
-def backup_database():
-    """สำรองฐานข้อมูล"""
+def manual_backup():
+    """สำรองข้อมูลด้วยตนเอง"""
     backup_dir = os.path.join(DATA_DIR, "backups")
     os.makedirs(backup_dir, exist_ok=True)
     
-    backup_path = os.path.join(backup_dir, f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_path = os.path.join(backup_dir, f"manual_backup_{timestamp}.db")
     
-    import shutil
-    if os.path.exists(DB_PATH):
+    try:
         shutil.copy2(DB_PATH, backup_path)
-        return backup_path
-    return None
+        st.session_state.last_backup_time = datetime.now()
+        return f"✅ Manual backup created: {os.path.basename(backup_path)}"
+    except Exception as e:
+        return f"❌ Manual backup failed: {str(e)}"
 
-def get_backup_files():
-    """ดึงรายการไฟล์ backup ทั้งหมด"""
-    backup_dir = os.path.join(DATA_DIR, "backups")
-    if not os.path.exists(backup_dir):
-        return []
-    
-    backup_files = []
-    for file in os.listdir(backup_dir):
-        if file.endswith('.db') and file.startswith('backup_'):
-            file_path = os.path.join(backup_dir, file)
-            file_time = os.path.getmtime(file_path)
-            backup_files.append({
-                'name': file,
-                'path': file_path,
-                'time': datetime.fromtimestamp(file_time),
-                'size': os.path.getsize(file_path)
-            })
-    
-    # เรียงลำดับจากใหม่ไปเก่า
-    backup_files.sort(key=lambda x: x['time'], reverse=True)
-    return backup_files
+def restore_backup(backup_file):
+    """กู้คืนข้อมูลจาก backup"""
+    try:
+        # สำรองข้อมูลปัจจุบันก่อนกู้คืน
+        current_backup = auto_backup()
+        
+        # กู้คืนจากไฟล์ backup
+        shutil.copy2(backup_file, DB_PATH)
+        
+        if current_backup:
+            return f"✅ Restored from backup. Pre-restore backup: {os.path.basename(current_backup)}"
+        else:
+            return "✅ Restored from backup"
+    except Exception as e:
+        return f"❌ Restore failed: {str(e)}"
+
+def delete_backup_file(backup_path):
+    """ลบไฟล์ backup ที่เลือก"""
+    try:
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+            return True
+        return False
+    except Exception as e:
+        st.error(f"❌ ไม่สามารถลบไฟล์ได้: {str(e)}")
+        return False
 
 # เริ่มต้นฐานข้อมูล
 init_database()
@@ -377,6 +468,13 @@ if 'export_page' not in st.session_state:
     st.session_state.export_page = 0
 if 'show_backup_section' not in st.session_state:
     st.session_state.show_backup_section = False
+if 'last_backup_time' not in st.session_state:
+    st.session_state.last_backup_time = None
+if 'backup_page' not in st.session_state:
+    st.session_state.backup_page = 0
+
+# ดึงสถิติ backup
+backup_files, total_backup_size = get_backup_stats()
 
 # UI
 st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ")
@@ -396,8 +494,15 @@ with st.sidebar:
     if os.path.exists(DB_PATH):
         file_size = os.path.getsize(DB_PATH)
         file_time = datetime.fromtimestamp(os.path.getmtime(DB_PATH))
-        st.sidebar.markdown(f"**📁 ขนาดไฟล์:** {file_size:,} bytes")
+        st.sidebar.markdown(f"**📁 ขนาดไฟล์:** {format_file_size(file_size)}")
         st.sidebar.markdown(f"**🕒 อัพเดตล่าสุด:** {file_time.strftime('%Y-%m-%d %H:%M')}")
+    
+    # แสดงสถิติ backup
+    st.sidebar.markdown(f"**💾 จำนวน Backup:** {len(backup_files)} files")
+    st.sidebar.markdown(f"**📦 ขนาด Backup รวม:** {format_file_size(total_backup_size)}")
+    
+    if st.session_state.last_backup_time:
+        st.sidebar.markdown(f"**🕒 Backup ล่าสุด:** {st.session_state.last_backup_time.strftime('%H:%M:%S')}")
     
     st.header("📥 ทดสอบระบบ")
     
@@ -511,25 +616,72 @@ with st.sidebar:
     if st.session_state.show_backup_section:
         st.subheader("การสำรองและกู้คืนข้อมูล")
         
-        # สร้าง backup
-        if st.button("📁 สร้าง Backup now", key="create_backup"):
+        # สร้าง backup ด้วยตนเอง
+        if st.button("📁 สร้าง Backup ทันที", key="create_backup", type="primary"):
             with st.spinner('กำลังสร้าง backup...'):
-                backup_path = backup_database()
-                if backup_path:
-                    st.success(f"✅ สร้าง backup สำเร็จ: `{os.path.basename(backup_path)}`")
-                    st.rerun()
-                else:
-                    st.error("❌ ไม่สามารถสร้าง backup ได้")
+                result = manual_backup()
+                st.success(result)
+                st.rerun()
         
-        # แสดงรายการ backup
-        backup_files = get_backup_files()
+        # แสดงรายการ backup ทั้งหมดแบบแบ่งหน้า
         if backup_files:
-            st.markdown("**รายการ Backup:**")
-            for i, backup in enumerate(backup_files[:5]):  # แสดง 5 ไฟล์ล่าสุด
-                st.write(f"{i+1}. {backup['name']} ({backup['time'].strftime('%Y-%m-%d %H:%M')})")
+            st.markdown(f"**📋 รายการ Backup ทั้งหมด ({len(backup_files)} files):**")
+            
+            # แบ่งหน้า
+            backup_page_size = 10
+            total_pages = (len(backup_files) + backup_page_size - 1) // backup_page_size
+            start_idx = st.session_state.backup_page * backup_page_size
+            end_idx = start_idx + backup_page_size
+            
+            current_backups = backup_files[start_idx:end_idx]
+            
+            for i, backup in enumerate(current_backups):
+                col1, col2, col3 = st.columns([3, 2, 1])
+                with col1:
+                    st.write(f"`{backup['name']}`")
+                with col2:
+                    st.caption(f"📏 {backup['size_readable']} | 🕒 {backup['time'].strftime('%Y-%m-%d %H:%M')}")
+                with col3:
+                    if st.button("🗑️", key=f"delete_{i}", help="ลบไฟล์นี้"):
+                        if delete_backup_file(backup['path']):
+                            st.success(f"ลบ {backup['name']} เรียบร้อย")
+                            st.rerun()
+            
+            # ควบคุมหน้า
+            if total_pages > 1:
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col1:
+                    if st.button("◀️ ก่อนหน้า", key="prev_backup_page") and st.session_state.backup_page > 0:
+                        st.session_state.backup_page -= 1
+                        st.rerun()
+                with col2:
+                    st.markdown(f"**หน้า {st.session_state.backup_page + 1} จาก {total_pages}**")
+                with col3:
+                    if st.button("ถัดไป ▶️", key="next_backup_page") and end_idx < len(backup_files):
+                        st.session_state.backup_page += 1
+                        st.rerun()
+        else:
+            st.info("ℹ️ ยังไม่มีไฟล์ backup")
+        
+        # กู้คืนข้อมูล
+        if backup_files:
+            st.markdown("---")
+            st.subheader("🔄 กู้คืนข้อมูล")
+            backup_options = [f"{bf['name']} ({bf['time'].strftime('%Y-%m-%d %H:%M')})" for bf in backup_files]
+            selected_backup = st.selectbox("เลือกไฟล์ที่จะกู้คืน:", backup_options)
+            
+            if st.button("🔄 กู้คืนข้อมูลจาก Backup", type="secondary"):
+                selected_index = backup_options.index(selected_backup)
+                selected_file = backup_files[selected_index]['path']
+                
+                with st.spinner('กำลังกู้คืนข้อมูล...'):
+                    result = restore_backup(selected_file)
+                    st.success(result)
+                    st.rerun()
         
         if st.button("❌ ปิด", key="close_backup"):
             st.session_state.show_backup_section = False
+            st.session_state.backup_page = 0
             st.rerun()
     
     # ส่วนล้างฐานข้อมูล
@@ -632,8 +784,8 @@ if uploaded_file is not None:
                     
                     # บันทึกลงฐานข้อมูลถ้าต้องการ
                     if save_to_db:
-                        save_phones_to_database(df['A'].tolist(), uploaded_file.name)
-                        st.success("💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย")
+                        new_records = save_phones_to_database(df['A'].tolist(), uploaded_file.name)
+                        st.success(f"💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย (เพิ่ม {new_records} เบอร์ใหม่)")
                     
                     # แสดงผลลัพธ์
                     st.success("✅ ตรวจสอบเสร็จสิ้น!")
@@ -684,14 +836,13 @@ if uploaded_file is not None:
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - ระบบเก็บข้อมูลถาวร"
+    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - ระบบสำรองข้อมูลไม่จำกัด"
     "</div>",
     unsafe_allow_html=True
 )
