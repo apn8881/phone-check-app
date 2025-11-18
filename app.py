@@ -7,6 +7,11 @@ import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 import os
 
+# ตั้งค่า path ถาวรสำหรับฐานข้อมูล
+DATA_DIR = "permanent_data"
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "phone_database.db")
+
 # ตั้งค่าหน้า
 st.set_page_config(
     page_title="โปรแกรมเช็คเบอร์โทรซ้ำ",
@@ -20,7 +25,7 @@ PASSWORD = "23669"
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
     """สร้างฐานข้อมูล SQLite พร้อม index เพื่อความเร็ว"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -51,7 +56,7 @@ def extract_last_9_digits(phone):
 
 def get_all_last_9_digits():
     """ดึงตัวเลข 9 ตัวท้ายทั้งหมดจากฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT last_9_digits FROM old_phones WHERE LENGTH(last_9_digits) = 9")
@@ -69,7 +74,7 @@ def get_all_last_9_digits():
 
 def get_database_stats():
     """ดึงสถิติจากฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT COUNT(*) FROM old_phones")
@@ -83,7 +88,7 @@ def get_database_stats():
 
 def get_phones_count():
     """นับจำนวนเบอร์โทรทั้งหมด"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT COUNT(*) FROM old_phones")
@@ -94,7 +99,7 @@ def get_phones_count():
 
 def get_phones_batch(limit=1000, offset=0):
     """ดึงข้อมูลเบอร์โทรแบบแบ่งกลุ่ม"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     
     query = """
     SELECT 
@@ -113,7 +118,7 @@ def get_phones_batch(limit=1000, offset=0):
 
 def save_phones_to_database(phone_numbers, source_file=""):
     """บันทึกเบอร์โทรลงฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     
     for phone in phone_numbers:
         last_9 = extract_last_9_digits(phone)
@@ -131,14 +136,14 @@ def save_phones_to_database(phone_numbers, source_file=""):
 
 def clear_database():
     """ล้างฐานข้อมูล"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("DELETE FROM old_phones")
     conn.commit()
     conn.close()
 
 def export_all_phones():
     """ส่งออกข้อมูลทั้งหมด"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     
     query = """
     SELECT 
@@ -154,7 +159,7 @@ def export_all_phones():
 
 def export_phones_txt():
     """ส่งออกข้อมูลทั้งหมดเป็นไฟล์ txt - ในรูปแบบ เบอร์โทร-ชื่อไฟล์"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     
     # ดึงข้อมูลเรียงตามไฟล์ต้นทางและเบอร์โทร
@@ -188,7 +193,7 @@ def export_phones_txt():
 
 def export_phones_simple_txt():
     """ส่งออกเฉพาะเบอร์โทรเป็นไฟล์ txt (แบบง่าย)"""
-    conn = sqlite3.connect('phone_database.db', timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     
     # ดึงเฉพาะเบอร์โทร เรียงตามไฟล์ต้นทาง
@@ -325,6 +330,41 @@ def read_excel_preserve_format(uploaded_file):
         
         return df
 
+def backup_database():
+    """สำรองฐานข้อมูล"""
+    backup_dir = os.path.join(DATA_DIR, "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    
+    backup_path = os.path.join(backup_dir, f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+    
+    import shutil
+    if os.path.exists(DB_PATH):
+        shutil.copy2(DB_PATH, backup_path)
+        return backup_path
+    return None
+
+def get_backup_files():
+    """ดึงรายการไฟล์ backup ทั้งหมด"""
+    backup_dir = os.path.join(DATA_DIR, "backups")
+    if not os.path.exists(backup_dir):
+        return []
+    
+    backup_files = []
+    for file in os.listdir(backup_dir):
+        if file.endswith('.db') and file.startswith('backup_'):
+            file_path = os.path.join(backup_dir, file)
+            file_time = os.path.getmtime(file_path)
+            backup_files.append({
+                'name': file,
+                'path': file_path,
+                'time': datetime.fromtimestamp(file_time),
+                'size': os.path.getsize(file_path)
+            })
+    
+    # เรียงลำดับจากใหม่ไปเก่า
+    backup_files.sort(key=lambda x: x['time'], reverse=True)
+    return backup_files
+
 # เริ่มต้นฐานข้อมูล
 init_database()
 
@@ -335,10 +375,15 @@ if 'show_clear_password' not in st.session_state:
     st.session_state.show_clear_password = False
 if 'export_page' not in st.session_state:
     st.session_state.export_page = 0
+if 'show_backup_section' not in st.session_state:
+    st.session_state.show_backup_section = False
 
 # UI
 st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ")
 st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
+
+# แสดงข้อมูลเกี่ยวกับที่เก็บข้อมูล
+st.sidebar.markdown(f"**📍 ที่เก็บข้อมูล:** `{os.path.abspath(DATA_DIR)}`")
 
 # Sidebar สำหรับสถิติและการจัดการ
 with st.sidebar:
@@ -347,12 +392,20 @@ with st.sidebar:
     st.metric("เบอร์โทรทั้งหมดในระบบ", f"{total_count:,}")
     st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", f"{valid_count:,}")
     
+    # แสดงข้อมูลไฟล์ฐานข้อมูล
+    if os.path.exists(DB_PATH):
+        file_size = os.path.getsize(DB_PATH)
+        file_time = datetime.fromtimestamp(os.path.getmtime(DB_PATH))
+        st.sidebar.markdown(f"**📁 ขนาดไฟล์:** {file_size:,} bytes")
+        st.sidebar.markdown(f"**🕒 อัพเดตล่าสุด:** {file_time.strftime('%Y-%m-%d %H:%M')}")
+    
     st.header("📥 ทดสอบระบบ")
     
     # ส่วนโหลดเบอร์ทั้งหมด
     if st.button("📤 เริ่มการทดสอบ", type="primary"):
         st.session_state.show_export_password = True
         st.session_state.show_clear_password = False
+        st.session_state.show_backup_section = False
         st.rerun()
     
     if st.session_state.show_export_password:
@@ -448,10 +501,42 @@ with st.sidebar:
     
     st.header("⚙️ การจัดการ")
     
+    # ส่วนสำรองข้อมูล
+    if st.button("💾 สำรองข้อมูล", type="secondary"):
+        st.session_state.show_backup_section = True
+        st.session_state.show_clear_password = False
+        st.session_state.show_export_password = False
+        st.rerun()
+    
+    if st.session_state.show_backup_section:
+        st.subheader("การสำรองและกู้คืนข้อมูล")
+        
+        # สร้าง backup
+        if st.button("📁 สร้าง Backup now", key="create_backup"):
+            with st.spinner('กำลังสร้าง backup...'):
+                backup_path = backup_database()
+                if backup_path:
+                    st.success(f"✅ สร้าง backup สำเร็จ: `{os.path.basename(backup_path)}`")
+                    st.rerun()
+                else:
+                    st.error("❌ ไม่สามารถสร้าง backup ได้")
+        
+        # แสดงรายการ backup
+        backup_files = get_backup_files()
+        if backup_files:
+            st.markdown("**รายการ Backup:**")
+            for i, backup in enumerate(backup_files[:5]):  # แสดง 5 ไฟล์ล่าสุด
+                st.write(f"{i+1}. {backup['name']} ({backup['time'].strftime('%Y-%m-%d %H:%M')})")
+        
+        if st.button("❌ ปิด", key="close_backup"):
+            st.session_state.show_backup_section = False
+            st.rerun()
+    
     # ส่วนล้างฐานข้อมูล
     if st.button("🗑️ ล้างฐานข้อมูล", type="secondary"):
         st.session_state.show_clear_password = True
         st.session_state.show_export_password = False
+        st.session_state.show_backup_section = False
         st.rerun()
     
     if st.session_state.show_clear_password:
@@ -599,13 +684,14 @@ if uploaded_file is not None:
 # ส่วนคำแนะนำ
 with st.expander("💡 คู่มือการใช้งาน"):
     st.markdown("""
-   """)
+
+    """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - รูปแบบ เบอร์โทร-ชื่อไฟล์"
+    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - ระบบเก็บข้อมูลถาวร"
     "</div>",
     unsafe_allow_html=True
 )
