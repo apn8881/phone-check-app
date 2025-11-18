@@ -63,8 +63,6 @@ def auto_backup():
         shutil.copy2(DB_PATH, backup_path)
         
         # ✅ ไม่ลบ backup เก่า - เก็บได้ไม่จำกัด
-        st.sidebar.success(f"💾 Auto-backup created: {os.path.basename(backup_path)}")
-        
         return backup_path
     except Exception as e:
         st.sidebar.error(f"❌ Backup failed: {str(e)}")
@@ -74,7 +72,7 @@ def get_backup_stats():
     """ดึงสถิติ backup"""
     backup_dir = os.path.join(DATA_DIR, "backups")
     if not os.path.exists(backup_dir):
-        return 0, 0
+        return [], 0
     
     backup_files = []
     total_size = 0
@@ -209,6 +207,7 @@ def save_phones_to_database(phone_numbers, source_file=""):
         backup_path = auto_backup()
         if backup_path:
             st.session_state.last_backup_time = datetime.now()
+            st.sidebar.success(f"💾 Auto-backup created: {os.path.basename(backup_path)}")
     
     return new_records_count
 
