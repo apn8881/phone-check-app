@@ -5,136 +5,19 @@ import io
 from datetime import datetime
 import openpyxl
 import os
-import shutil
-import tempfile
-import gdown
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+import json
+import base64
+import requests
 
 # ตั้งค่าหน้า
 st.set_page_config(
-    page_title="โปรแกรมเช็คเบอร์โทรซ้ำ - Google Drive",
+    page_title="โปรแกรมเช็คเบอร์โทรซ้ำ",
     page_icon="📱",
     layout="wide"
 )
 
 # รหัสผ่าน
 PASSWORD = "23669"
-
-# Google Drive Setup
-def setup_google_drive():
-    """ตั้งค่า Google Drive"""
-    try:
-        gauth = GoogleAuth()
-        
-        # ลองใช้ credentials ที่มีอยู่
-        gauth.LoadCredentialsFile("google_drive_credentials.json")
-        
-        if gauth.credentials is None:
-            # ถ้าไม่มี credentials ให้ผู้ใช้กำหนดค่า
-            st.warning("🔐 ต้องการตั้งค่า Google Drive")
-            st.info("""
-            **ขั้นตอนการตั้งค่า:**
-            1. ไปที่ [Google Cloud Console](https://console.cloud.google.com/)
-            2. สร้างโปรเจคใหม่
-            3. เปิดใช้งาน Google Drive API
-            4. สร้าง credentials (OAuth 2.0 Client ID)
-            5. ดาวน์โหลดไฟล์ client_secrets.json
-            6. อัพโหลดไฟล์ client_secrets.json ด้านล่าง
-            """)
-            
-            uploaded_secrets = st.file_uploader("อัพโหลด client_secrets.json", type=['json'])
-            if uploaded_secrets:
-                with open("client_secrets.json", "wb") as f:
-                    f.write(uploaded_secrets.getvalue())
-                
-                gauth = GoogleAuth()
-                gauth.LocalWebserverAuth()
-                gauth.SaveCredentialsFile("google_drive_credentials.json")
-                st.success("✅ ตั้งค่า Google Drive สำเร็จ!")
-        
-        drive = GoogleDrive(gauth)
-        return drive
-    except Exception as e:
-        st.error(f"❌ ตั้งค่า Google Drive ไม่สำเร็จ: {str(e)}")
-        return None
-
-# ฟังก์ชันจัดการ Google Drive
-def get_database_from_drive(drive, file_id=None):
-    """ดาวน์โหลดฐานข้อมูลจาก Google Drive"""
-    try:
-        # ค้นหาไฟล์ใน Google Drive
-        if file_id:
-            file = drive.CreateFile({'id': file_id})
-        else:
-            file_list = drive.ListFile({'q': "title='phone_database.db' and trashed=false"}).GetList()
-            if file_list:
-                file = file_list[0]
-            else:
-                return None
-        
-        # ดาวน์โหลดไฟล์
-        local_path = "phone_database.db"
-        file.GetContentFile(local_path)
-        return local_path
-    except Exception as e:
-        st.error(f"❌ ดาวน์โหลดจาก Google Drive ไม่สำเร็จ: {str(e)}")
-        return None
-
-def upload_database_to_drive(drive, local_path, file_id=None):
-    """อัพโหลดฐานข้อมูลไปยัง Google Drive"""
-    try:
-        if file_id:
-            # อัพเดทไฟล์ที่มีอยู่
-            file = drive.CreateFile({'id': file_id})
-        else:
-            # สร้างไฟล์ใหม่
-            file = drive.CreateFile({'title': 'phone_database.db'})
-        
-        file.SetContentFile(local_path)
-        file.Upload()
-        return file['id']
-    except Exception as e:
-        st.error(f"❌ อัพโหลดไป Google Drive ไม่สำเร็จ: {str(e)}")
-        return None
-
-def sync_with_drive():
-    """ซิงค์ข้อมูลกับ Google Drive"""
-    drive = setup_google_drive()
-    if not drive:
-        return None, None
-    
-    local_db_path = "phone_database.db"
-    drive_file_id = None
-    
-    # ค้นหาไฟล์ใน Drive
-    try:
-        file_list = drive.ListFile({'q': "title='phone_database.db' and trashed=false"}).GetList()
-        if file_list:
-            drive_file_id = file_list[0]['id']
-            
-            # ตรวจสอบว่าไฟล์ไหนใหม่กว่า
-            local_time = os.path.getmtime(local_db_path) if os.path.exists(local_db_path) else 0
-            drive_time = file_list[0]['modifiedDate']
-            drive_time = datetime.strptime(drive_time, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp()
-            
-            if drive_time > local_time:
-                # ดาวน์โหลดจาก Drive
-                get_database_from_drive(drive, drive_file_id)
-                st.sidebar.success("✅ โหลดข้อมูลจาก Google Drive สำเร็จ")
-            else:
-                # อัพโหลดไป Drive
-                upload_database_to_drive(drive, local_db_path, drive_file_id)
-                st.sidebar.success("✅ บันทึกข้อมูลไป Google Drive สำเร็จ")
-        else:
-            # สร้างไฟล์ใหม่ใน Drive
-            if os.path.exists(local_db_path):
-                drive_file_id = upload_database_to_drive(drive, local_db_path)
-                st.sidebar.success("✅ สร้างไฟล์ใหม่ใน Google Drive สำเร็จ")
-    except Exception as e:
-        st.sidebar.error(f"❌ ซิงค์ข้อมูลไม่สำเร็จ: {str(e)}")
-    
-    return drive, drive_file_id
 
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
@@ -220,11 +103,6 @@ def save_phones_to_database(phone_numbers, source_file=""):
     
     conn.commit()
     conn.close()
-    
-    # ซิงค์กับ Google Drive
-    if new_records_count > 0:
-        sync_with_drive()
-    
     return new_records_count
 
 def save_phones_as_excel(df):
@@ -273,112 +151,174 @@ def save_phones_as_excel(df):
     output.seek(0)
     return output
 
-# เริ่มต้นแอป
-def main():
-    st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ - Google Drive")
-    st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
-    
-    # ซิงค์กับ Google Drive
-    if st.sidebar.button("🔄 ซิงค์กับ Google Drive"):
-        with st.spinner("กำลังซิงค์ข้อมูล..."):
-            sync_with_drive()
-    
-    # แสดงสถานะ
+def export_database():
+    """ส่งออกฐานข้อมูลเป็นไฟล์"""
     if os.path.exists("phone_database.db"):
-        file_size = os.path.getsize("phone_database.db")
-        file_time = datetime.fromtimestamp(os.path.getmtime("phone_database.db"))
-        st.sidebar.markdown(f"**📁 ขนาดไฟล์:** {file_size:,} bytes")
-        st.sidebar.markdown(f"**🕒 อัพเดตล่าสุด:** {file_time.strftime('%Y-%m-%d %H:%M')}")
-    
-    # สถิติ
-    total_count, valid_count = get_database_stats()
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**📊 สถิติ:**")
-    st.sidebar.markdown(f"เบอร์โทรทั้งหมด: **{total_count:,}**")
-    st.sidebar.markdown(f"เบอร์ที่ตรวจสอบได้: **{valid_count:,}**")
-    
-    # ส่วนหลัก
-    st.markdown("---")
-    
-    # อัพโหลดไฟล์ Excel
-    uploaded_file = st.file_uploader(
-        "**เลือกไฟล์ Excel**", 
-        type=['xlsx', 'xls'],
-        help="ไฟล์ Excel ต้องมีคอลัมน์แรกเป็นเบอร์โทร"
-    )
-    
-    if uploaded_file is not None:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            save_to_db = st.checkbox(
-                "💾 บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล", 
-                value=True,
-                help="บันทึกเบอร์โทรจากไฟล์นี้เพื่อใช้ตรวจสอบซ้ำในครั้งต่อไป"
-            )
-        
-        with col2:
-            if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
-                with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
-                    try:
-                        # อ่านไฟล์ Excel
-                        df = pd.read_excel(uploaded_file, dtype=str)
-                        df = df.rename(columns={df.columns[0]: 'A'})
-                        df['A'] = df['A'].astype(str).fillna('')
-                        
-                        st.info(f"ใช้คอลัมน์แรกเป็นคอลัมน์เบอร์โทร (พบ {len(df)} แถว)")
-                        
-                        # ดึงตัวเลข 9 ตัวท้าย
-                        df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
-                        
-                        # ดึงข้อมูลเบอร์เก่าจากฐานข้อมูล
-                        existing_last_9_digits = get_all_last_9_digits()
-                        
-                        # ตรวจสอบซ้ำ
-                        df['is_duplicate'] = df['last_9_digits'].isin(existing_last_9_digits)
-                        
-                        # กรองข้อมูลที่ไม่ซ้ำ
-                        unique_df = df[~df['is_duplicate']].copy()
-                        unique_df = unique_df.drop(columns=['last_9_digits', 'is_duplicate'])
-                        
-                        # บันทึกลงฐานข้อมูล
-                        if save_to_db:
-                            new_records = save_phones_to_database(df['A'].tolist(), uploaded_file.name)
-                            st.success(f"💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย (เพิ่ม {new_records} เบอร์ใหม่)")
-                        
-                        # แสดงผลลัพธ์
-                        st.success("✅ ตรวจสอบเสร็จสิ้น!")
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("เบอร์โทรทั้งหมด", len(df))
-                        with col2:
-                            st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
-                        with col3:
-                            st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
-                        
-                        # ดาวน์โหลดไฟล์ผลลัพธ์
-                        output = save_phones_as_excel(unique_df)
-                        
-                        original_name = uploaded_file.name
-                        name_without_ext = original_name.rsplit('.', 1)[0]
-                        download_filename = f"{name_without_ext}-Cut.xlsx"
-                        
-                        st.download_button(
-                            label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
-                            data=output.getvalue(),
-                            file_name=download_filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            type="primary"
-                        )
-                        
-                    except Exception as e:
-                        st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+        with open("phone_database.db", "rb") as f:
+            return f.read()
+    return None
+
+def import_database(uploaded_file):
+    """นำเข้าฐานข้อมูลจากไฟล์"""
+    try:
+        with open("phone_database.db", "wb") as f:
+            f.write(uploaded_file.getvalue())
+        return True, "✅ นำเข้าข้อมูลสำเร็จ"
+    except Exception as e:
+        return False, f"❌ นำเข้าข้อมูลล้มเหลว: {str(e)}"
 
 # เริ่มต้นฐานข้อมูล
 if not os.path.exists("phone_database.db"):
     init_database()
 
-# รันแอป
-if __name__ == "__main__":
-    main()
+# UI
+st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ")
+st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
+
+# Sidebar - การจัดการข้อมูล
+with st.sidebar:
+    st.header("💾 การจัดการข้อมูล")
+    
+    # ส่งออกข้อมูล
+    if st.button("📤 ส่งออกฐานข้อมูล"):
+        db_data = export_database()
+        if db_data:
+            st.download_button(
+                label="📥 ดาวน์โหลดไฟล์ฐานข้อมูล",
+                data=db_data,
+                file_name=f"phone_database_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
+                mime="application/octet-stream"
+            )
+        else:
+            st.error("❌ ไม่มีข้อมูลที่จะส่งออก")
+    
+    # นำเข้าข้อมูล
+    st.markdown("---")
+    st.subheader("นำเข้าข้อมูล")
+    uploaded_db = st.file_uploader("เลือกไฟล์ฐานข้อมูล (.db)", type=['db'], key="db_uploader")
+    if uploaded_db and st.button("📥 นำเข้าฐานข้อมูล"):
+        success, message = import_database(uploaded_db)
+        if success:
+            st.success(message)
+            st.rerun()
+        else:
+            st.error(message)
+    
+    # สถิติ
+    st.markdown("---")
+    st.subheader("📊 สถิติ")
+    total_count, valid_count = get_database_stats()
+    st.metric("เบอร์โทรทั้งหมด", f"{total_count:,}")
+    st.metric("เบอร์ที่ตรวจสอบได้", f"{valid_count:,}")
+    
+    if os.path.exists("phone_database.db"):
+        file_size = os.path.getsize("phone_database.db")
+        file_time = datetime.fromtimestamp(os.path.getmtime("phone_database.db"))
+        st.caption(f"ขนาดไฟล์: {file_size:,} bytes")
+        st.caption(f"อัพเดท: {file_time.strftime('%Y-%m-%d %H:%M')}")
+
+# ส่วนหลัก
+st.markdown("---")
+
+# อัพโหลดไฟล์ Excel
+uploaded_file = st.file_uploader(
+    "**เลือกไฟล์ Excel**", 
+    type=['xlsx', 'xls'],
+    help="ไฟล์ Excel ต้องมีคอลัมน์แรกเป็นเบอร์โทร"
+)
+
+if uploaded_file is not None:
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        save_to_db = st.checkbox(
+            "💾 บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล", 
+            value=True,
+            help="บันทึกเบอร์โทรจากไฟล์นี้เพื่อใช้ตรวจสอบซ้ำในครั้งต่อไป"
+        )
+    
+    with col2:
+        if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
+            with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
+                try:
+                    # อ่านไฟล์ Excel
+                    df = pd.read_excel(uploaded_file, dtype=str)
+                    df = df.rename(columns={df.columns[0]: 'A'})
+                    df['A'] = df['A'].astype(str).fillna('')
+                    
+                    st.info(f"ใช้คอลัมน์แรกเป็นคอลัมน์เบอร์โทร (พบ {len(df)} แถว)")
+                    
+                    # ดึงตัวเลข 9 ตัวท้าย
+                    df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
+                    
+                    # ดึงข้อมูลเบอร์เก่าจากฐานข้อมูล
+                    existing_last_9_digits = get_all_last_9_digits()
+                    
+                    # ตรวจสอบซ้ำ
+                    df['is_duplicate'] = df['last_9_digits'].isin(existing_last_9_digits)
+                    
+                    # กรองข้อมูลที่ไม่ซ้ำ
+                    unique_df = df[~df['is_duplicate']].copy()
+                    unique_df = unique_df.drop(columns=['last_9_digits', 'is_duplicate'])
+                    
+                    # บันทึกลงฐานข้อมูล
+                    if save_to_db:
+                        new_records = save_phones_to_database(df['A'].tolist(), uploaded_file.name)
+                        st.success(f"💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย (เพิ่ม {new_records} เบอร์ใหม่)")
+                    
+                    # แสดงผลลัพธ์
+                    st.success("✅ ตรวจสอบเสร็จสิ้น!")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("เบอร์โทรทั้งหมด", len(df))
+                    with col2:
+                        st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
+                    with col3:
+                        st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
+                    
+                    # ดาวน์โหลดไฟล์ผลลัพธ์
+                    output = save_phones_as_excel(unique_df)
+                    
+                    original_name = uploaded_file.name
+                    name_without_ext = original_name.rsplit('.', 1)[0]
+                    download_filename = f"{name_without_ext}-Cut.xlsx"
+                    
+                    st.download_button(
+                        label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
+                        data=output.getvalue(),
+                        file_name=download_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True
+                    )
+                    
+                    # แสดงตัวอย่าง
+                    with st.expander("📋 ดูตัวอย่างข้อมูลผลลัพธ์"):
+                        st.dataframe(unique_df.head(10), use_container_width=True)
+                        
+                except Exception as e:
+                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+
+# คำแนะนำ
+with st.expander("💡 คู่มือการใช้งาน"):
+    st.markdown("""
+    ### 🔒 วิธีป้องกันข้อมูลหายเมื่อรีสตาร์ตแอป:
+    
+    1. **สำรองข้อมูลเป็นระยะ**:
+       - ใช้ปุ่ม "📤 ส่งออกฐานข้อมูล" ใน sidebar
+       - ดาวน์โหลดไฟล์ .db เก็บไว้ในเครื่องหรือ Google Drive
+       
+    2. **กู้คืนข้อมูลเมื่อรีสตาร์ต**:
+       - อัพโหลดไฟล์ .db ที่สำรองไว้
+       - กด "📥 นำเข้าฐานข้อมูล"
+       
+    3. **เก็บไฟล์ .db ไว้ใน Google Drive**:
+       - อัพโหลดไฟล์ .db ไปยัง Google Drive ด้วยตนเอง
+       - ดาวน์โหลดกลับมาเมื่อต้องการใช้
+       
+    4. **ข้อมูลจะปลอดภัย** เพราะคุณเป็นคนจัดการไฟล์ backup เอง
+    """)
+
+st.markdown("---")
+st.markdown("พัฒนาด้วย Streamlit | ระบบสำรองข้อมูลแบบ manual")
