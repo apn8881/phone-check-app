@@ -4,18 +4,16 @@ import sqlite3
 import io
 from datetime import datetime
 import openpyxl
-from openpyxl.utils.dataframe import dataframe_to_rows
 import os
 import shutil
-
-# ตั้งค่า path ถาวรสำหรับฐานข้อมูล
-DATA_DIR = "permanent_data"
-os.makedirs(DATA_DIR, exist_ok=True)
-DB_PATH = os.path.join(DATA_DIR, "phone_database.db")
+import tempfile
+import gdown
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 
 # ตั้งค่าหน้า
 st.set_page_config(
-    page_title="โปรแกรมเช็คเบอร์โทรซ้ำ",
+    page_title="โปรแกรมเช็คเบอร์โทรซ้ำ - Google Drive",
     page_icon="📱",
     layout="wide"
 )
@@ -23,10 +21,125 @@ st.set_page_config(
 # รหัสผ่าน
 PASSWORD = "23669"
 
+# Google Drive Setup
+def setup_google_drive():
+    """ตั้งค่า Google Drive"""
+    try:
+        gauth = GoogleAuth()
+        
+        # ลองใช้ credentials ที่มีอยู่
+        gauth.LoadCredentialsFile("google_drive_credentials.json")
+        
+        if gauth.credentials is None:
+            # ถ้าไม่มี credentials ให้ผู้ใช้กำหนดค่า
+            st.warning("🔐 ต้องการตั้งค่า Google Drive")
+            st.info("""
+            **ขั้นตอนการตั้งค่า:**
+            1. ไปที่ [Google Cloud Console](https://console.cloud.google.com/)
+            2. สร้างโปรเจคใหม่
+            3. เปิดใช้งาน Google Drive API
+            4. สร้าง credentials (OAuth 2.0 Client ID)
+            5. ดาวน์โหลดไฟล์ client_secrets.json
+            6. อัพโหลดไฟล์ client_secrets.json ด้านล่าง
+            """)
+            
+            uploaded_secrets = st.file_uploader("อัพโหลด client_secrets.json", type=['json'])
+            if uploaded_secrets:
+                with open("client_secrets.json", "wb") as f:
+                    f.write(uploaded_secrets.getvalue())
+                
+                gauth = GoogleAuth()
+                gauth.LocalWebserverAuth()
+                gauth.SaveCredentialsFile("google_drive_credentials.json")
+                st.success("✅ ตั้งค่า Google Drive สำเร็จ!")
+        
+        drive = GoogleDrive(gauth)
+        return drive
+    except Exception as e:
+        st.error(f"❌ ตั้งค่า Google Drive ไม่สำเร็จ: {str(e)}")
+        return None
+
+# ฟังก์ชันจัดการ Google Drive
+def get_database_from_drive(drive, file_id=None):
+    """ดาวน์โหลดฐานข้อมูลจาก Google Drive"""
+    try:
+        # ค้นหาไฟล์ใน Google Drive
+        if file_id:
+            file = drive.CreateFile({'id': file_id})
+        else:
+            file_list = drive.ListFile({'q': "title='phone_database.db' and trashed=false"}).GetList()
+            if file_list:
+                file = file_list[0]
+            else:
+                return None
+        
+        # ดาวน์โหลดไฟล์
+        local_path = "phone_database.db"
+        file.GetContentFile(local_path)
+        return local_path
+    except Exception as e:
+        st.error(f"❌ ดาวน์โหลดจาก Google Drive ไม่สำเร็จ: {str(e)}")
+        return None
+
+def upload_database_to_drive(drive, local_path, file_id=None):
+    """อัพโหลดฐานข้อมูลไปยัง Google Drive"""
+    try:
+        if file_id:
+            # อัพเดทไฟล์ที่มีอยู่
+            file = drive.CreateFile({'id': file_id})
+        else:
+            # สร้างไฟล์ใหม่
+            file = drive.CreateFile({'title': 'phone_database.db'})
+        
+        file.SetContentFile(local_path)
+        file.Upload()
+        return file['id']
+    except Exception as e:
+        st.error(f"❌ อัพโหลดไป Google Drive ไม่สำเร็จ: {str(e)}")
+        return None
+
+def sync_with_drive():
+    """ซิงค์ข้อมูลกับ Google Drive"""
+    drive = setup_google_drive()
+    if not drive:
+        return None, None
+    
+    local_db_path = "phone_database.db"
+    drive_file_id = None
+    
+    # ค้นหาไฟล์ใน Drive
+    try:
+        file_list = drive.ListFile({'q': "title='phone_database.db' and trashed=false"}).GetList()
+        if file_list:
+            drive_file_id = file_list[0]['id']
+            
+            # ตรวจสอบว่าไฟล์ไหนใหม่กว่า
+            local_time = os.path.getmtime(local_db_path) if os.path.exists(local_db_path) else 0
+            drive_time = file_list[0]['modifiedDate']
+            drive_time = datetime.strptime(drive_time, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp()
+            
+            if drive_time > local_time:
+                # ดาวน์โหลดจาก Drive
+                get_database_from_drive(drive, drive_file_id)
+                st.sidebar.success("✅ โหลดข้อมูลจาก Google Drive สำเร็จ")
+            else:
+                # อัพโหลดไป Drive
+                upload_database_to_drive(drive, local_db_path, drive_file_id)
+                st.sidebar.success("✅ บันทึกข้อมูลไป Google Drive สำเร็จ")
+        else:
+            # สร้างไฟล์ใหม่ใน Drive
+            if os.path.exists(local_db_path):
+                drive_file_id = upload_database_to_drive(drive, local_db_path)
+                st.sidebar.success("✅ สร้างไฟล์ใหม่ใน Google Drive สำเร็จ")
+    except Exception as e:
+        st.sidebar.error(f"❌ ซิงค์ข้อมูลไม่สำเร็จ: {str(e)}")
+    
+    return drive, drive_file_id
+
 # ฟังก์ชันจัดการฐานข้อมูล
 def init_database():
-    """สร้างฐานข้อมูล SQLite พร้อม index เพื่อความเร็ว"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    """สร้างฐานข้อมูล SQLite"""
+    conn = sqlite3.connect("phone_database.db", timeout=30)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -45,70 +158,6 @@ def init_database():
     conn.commit()
     conn.close()
 
-def auto_backup():
-    """สำรองข้อมูลอัตโนมัติทุกครั้งที่มีการใช้งาน - เก็บไม่จำกัด"""
-    backup_dir = os.path.join(DATA_DIR, "backups")
-    os.makedirs(backup_dir, exist_ok=True)
-    
-    # ตรวจสอบว่ามีไฟล์ฐานข้อมูลหรือไม่
-    if not os.path.exists(DB_PATH):
-        return None
-    
-    # สร้างชื่อไฟล์ backup
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_path = os.path.join(backup_dir, f"auto_backup_{timestamp}.db")
-    
-    try:
-        # คัดลอกไฟล์ฐานข้อมูล
-        shutil.copy2(DB_PATH, backup_path)
-        
-        # ✅ ไม่ลบ backup เก่า - เก็บได้ไม่จำกัด
-        return backup_path
-    except Exception as e:
-        st.sidebar.error(f"❌ Backup failed: {str(e)}")
-        return None
-
-def get_backup_stats():
-    """ดึงสถิติ backup"""
-    backup_dir = os.path.join(DATA_DIR, "backups")
-    if not os.path.exists(backup_dir):
-        return [], 0
-    
-    backup_files = []
-    total_size = 0
-    
-    for file in os.listdir(backup_dir):
-        if file.endswith('.db') and ('auto_backup_' in file or 'backup_' in file or 'manual_' in file):
-            file_path = os.path.join(backup_dir, file)
-            file_size = os.path.getsize(file_path)
-            file_time = os.path.getmtime(file_path)
-            
-            backup_files.append({
-                'name': file,
-                'path': file_path,
-                'size': file_size,
-                'time': datetime.fromtimestamp(file_time),
-                'size_readable': format_file_size(file_size)
-            })
-            total_size += file_size
-    
-    # เรียงลำดับจากใหม่ไปเก่า
-    backup_files.sort(key=lambda x: x['time'], reverse=True)
-    return backup_files, total_size
-
-def format_file_size(size_bytes):
-    """แปลงขนาดไฟล์ให้อ่านง่าย"""
-    if size_bytes == 0:
-        return "0 B"
-    
-    size_names = ["B", "KB", "MB", "GB"]
-    i = 0
-    while size_bytes >= 1024 and i < len(size_names)-1:
-        size_bytes /= 1024.0
-        i += 1
-    
-    return f"{size_bytes:.2f} {size_names[i]}"
-
 def extract_last_9_digits(phone):
     """ดึงตัวเลข 9 ตัวท้ายจากเบอร์โทร"""
     if pd.isna(phone) or phone == '' or phone is None:
@@ -121,7 +170,7 @@ def extract_last_9_digits(phone):
 
 def get_all_last_9_digits():
     """ดึงตัวเลข 9 ตัวท้ายทั้งหมดจากฐานข้อมูล"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect("phone_database.db", timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT last_9_digits FROM old_phones WHERE LENGTH(last_9_digits) = 9")
@@ -139,7 +188,7 @@ def get_all_last_9_digits():
 
 def get_database_stats():
     """ดึงสถิติจากฐานข้อมูล"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect("phone_database.db", timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("SELECT COUNT(*) FROM old_phones")
@@ -151,39 +200,9 @@ def get_database_stats():
     conn.close()
     return total_count, valid_count
 
-def get_phones_count():
-    """นับจำนวนเบอร์โทรทั้งหมด"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM old_phones")
-    count = cursor.fetchone()[0]
-    
-    conn.close()
-    return count
-
-def get_phones_batch(limit=1000, offset=0):
-    """ดึงข้อมูลเบอร์โทรแบบแบ่งกลุ่ม"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    
-    query = """
-    SELECT 
-        phone_number,
-        last_9_digits,
-        source_file,
-        created_date
-    FROM old_phones
-    ORDER BY source_file, phone_number
-    LIMIT ? OFFSET ?
-    """
-    
-    df = pd.read_sql_query(query, conn, params=(limit, offset))
-    conn.close()
-    return df
-
 def save_phones_to_database(phone_numbers, source_file=""):
-    """บันทึกเบอร์โทรลงฐานข้อมูล + สำรองข้อมูลอัตโนมัติ"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    """บันทึกเบอร์โทรลงฐานข้อมูล"""
+    conn = sqlite3.connect("phone_database.db", timeout=30)
     
     new_records_count = 0
     for phone in phone_numbers:
@@ -202,116 +221,21 @@ def save_phones_to_database(phone_numbers, source_file=""):
     conn.commit()
     conn.close()
     
-    # สำรองข้อมูลอัตโนมัติถ้ามีข้อมูลใหม่
+    # ซิงค์กับ Google Drive
     if new_records_count > 0:
-        backup_path = auto_backup()
-        if backup_path:
-            st.session_state.last_backup_time = datetime.now()
-            st.sidebar.success(f"💾 Auto-backup created: {os.path.basename(backup_path)}")
+        sync_with_drive()
     
     return new_records_count
 
-def clear_database():
-    """ล้างฐานข้อมูล + สำรองข้อมูลก่อนล้าง"""
-    # สำรองข้อมูลก่อนล้าง
-    backup_path = auto_backup()
-    
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("DELETE FROM old_phones")
-    conn.commit()
-    conn.close()
-    
-    if backup_path:
-        st.sidebar.info(f"📋 Pre-clear backup: {os.path.basename(backup_path)}")
-
-def export_all_phones():
-    """ส่งออกข้อมูลทั้งหมด"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    
-    query = """
-    SELECT 
-        phone_number,
-        source_file
-    FROM old_phones
-    ORDER BY source_file, phone_number
-    """
-    
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    return df
-
-def export_phones_txt():
-    """ส่งออกข้อมูลทั้งหมดเป็นไฟล์ txt - ในรูปแบบ เบอร์โทร-ชื่อไฟล์"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    cursor = conn.cursor()
-    
-    # ดึงข้อมูลเรียงตามไฟล์ต้นทางและเบอร์โทร
-    cursor.execute("""
-        SELECT phone_number, source_file 
-        FROM old_phones 
-        ORDER BY source_file, phone_number
-    """)
-    
-    # สร้างเนื้อหา txt
-    txt_content = "เบอร์โทรทั้งหมดในระบบ\n"
-    txt_content += "=" * 50 + "\n"
-    txt_content += f"วันที่ส่งออก: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    txt_content += "รูปแบบ: เบอร์โทร-ชื่อไฟล์\n"
-    txt_content += "=" * 50 + "\n\n"
-    
-    # นับจำนวน
-    count = 0
-    
-    for row in cursor:
-        phone, source = row
-        # เขียนในรูปแบบ เบอร์โทร-ชื่อไฟล์
-        txt_content += f"{phone}-{source}\n"
-        count += 1
-    
-    txt_content += f"\n{'='*50}\n"
-    txt_content += f"รวมทั้งหมด: {count} เบอร์\n"
-    
-    conn.close()
-    return txt_content, count
-
-def export_phones_simple_txt():
-    """ส่งออกเฉพาะเบอร์โทรเป็นไฟล์ txt (แบบง่าย)"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    cursor = conn.cursor()
-    
-    # ดึงเฉพาะเบอร์โทร เรียงตามไฟล์ต้นทาง
-    cursor.execute("SELECT phone_number FROM old_phones ORDER BY source_file, phone_number")
-    
-    # สร้างเนื้อหา txt แบบง่าย (เบอร์โทรอย่างเดียว)
-    txt_content = f"# เบอร์โทรทั้งหมดในระบบ\n"
-    txt_content += f"# วันที่ส่งออก: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    txt_content += f"# รวมทั้งหมด: \n\n"
-    
-    count = 0
-    for row in cursor:
-        phone = row[0]
-        if phone and str(phone).strip():  # ตรวจสอบว่าไม่ว่าง
-            txt_content += f"{phone}\n"
-            count += 1
-    
-    # อัพเดตจำนวน
-    txt_content = txt_content.replace("# รวมทั้งหมด: ", f"# รวมทั้งหมด: {count} เบอร์")
-    
-    conn.close()
-    return txt_content, count
-
 def save_phones_as_excel(df):
-    """บันทึก DataFrame เป็น Excel - แก้ไขปัญหาเลข 0 หาย"""
+    """บันทึก DataFrame เป็น Excel"""
     output = io.BytesIO()
     
-    # ตรวจสอบว่า DataFrame ว่างหรือไม่
     if df.empty or len(df) == 0:
-        # สร้าง DataFrame ว่างที่มีหัวข้อคอลัมน์
         empty_df = pd.DataFrame(columns=df.columns)
         empty_df.loc[0] = ['ไม่มีข้อมูล'] + [''] * (len(df.columns) - 1)
         df = empty_df
     
-    # ใช้ openpyxl โดยตรงเพื่อควบคุม format มากขึ้น
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "เบอร์โทร"
@@ -322,30 +246,24 @@ def save_phones_as_excel(df):
         cell.font = openpyxl.styles.Font(bold=True)
         cell.fill = openpyxl.styles.PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
     
-    # เขียนข้อมูล - แก้ไขปัญหาเลข 0 หาย
+    # เขียนข้อมูล
     for row_idx, (_, row_data) in enumerate(df.iterrows(), 2):
         for col_idx, value in enumerate(row_data, 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             
-            # คอลัมน์แรก (เบอร์โทร) บังคับให้เป็น text และรักษาเลข 0
             if col_idx == 1 and pd.notna(value) and value != '':
-                # แปลงเป็น string และรักษาเลข 0 นำหน้า
                 phone_str = str(value).strip()
-                # ตรวจสอบว่าเป็นตัวเลขและมี 0 นำหน้าหรือไม่
                 if phone_str and phone_str != 'ไม่มีข้อมูล':
-                    # บังคับให้เป็น text format
                     cell.value = phone_str
-                    cell.number_format = '@'  # Text format
+                    cell.number_format = '@'
                 else:
                     cell.value = phone_str
             else:
-                # คอลัมน์อื่นๆ
                 if pd.notna(value):
                     cell.value = value
                 else:
                     cell.value = ''
     
-    # ตั้งค่า column width
     column_widths = [20, 15, 20, 15]
     for col_idx, width in enumerate(column_widths[:len(df.columns)], 1):
         col_letter = openpyxl.utils.get_column_letter(col_idx)
@@ -355,493 +273,112 @@ def save_phones_as_excel(df):
     output.seek(0)
     return output
 
-def read_excel_preserve_format(uploaded_file):
-    """อ่านไฟล์ Excel โดยรักษา format เดิมและเลข 0 นำหน้า"""
-    try:
-        # อ่านไฟล์โดยใช้ openpyxl เพื่อรักษา format
-        wb = openpyxl.load_workbook(uploaded_file, data_only=False)
-        ws = wb.active
-        
-        # แปลงเป็น DataFrame
-        data = []
-        for row in ws.iter_rows(values_only=True):
-            data.append(row)
-        
-        df = pd.DataFrame(data)
-        
-        # ตั้งชื่อคอลัมน์แรกเป็น 'A'
-        if len(df.columns) > 0:
-            df = df.rename(columns={0: 'A'})
-            
-            # แปลงคอลัมน์ A เป็น string และรักษา format
-            df['A'] = df['A'].astype(str)
-            df['A'] = df['A'].fillna('')
-            
-            # ฟังก์ชันช่วยรักษาเลข 0 นำหน้า
-            def preserve_leading_zeros(cell_value):
-                if pd.isna(cell_value) or cell_value == '':
-                    return ''
-                # ถ้าเป็นตัวเลขและมี 0 นำหน้าใน Excel
-                try:
-                    # ตรวจสอบว่าเป็นตัวเลขและมี 0 นำหน้า
-                    cell_str = str(cell_value)
-                    if cell_str.isdigit() and len(cell_str) > 1 and cell_str[0] == '0':
-                        return cell_str
-                    else:
-                        return cell_str
-                except:
-                    return str(cell_value)
-            
-            # ปรับคอลัมน์ A เพื่อรักษาเลข 0
-            df['A'] = df['A'].apply(preserve_leading_zeros)
-        
-        return df
-        
-    except Exception as e:
-        # ถ้าใช้ openpyxl ไม่ได้ ให้ใช้ pandas แบบเดิม
-        st.warning("⚠️  ใช้การอ่านไฟล์แบบรักษา format ไม่สำเร็จ ใช้วิธีปกติแทน")
-        df = pd.read_excel(uploaded_file, dtype=str)
-        
-        # ตรวจสอบคอลัมน์
-        if 'A' not in df.columns and len(df.columns) > 0:
-            first_col = df.columns[0]
-            df = df.rename(columns={first_col: 'A'})
-        
-        # บังคับให้คอลัมน์ A เป็น string
-        df['A'] = df['A'].astype(str)
-        df['A'] = df['A'].fillna('')
-        
-        return df
-
-def manual_backup():
-    """สำรองข้อมูลด้วยตนเอง"""
-    backup_dir = os.path.join(DATA_DIR, "backups")
-    os.makedirs(backup_dir, exist_ok=True)
+# เริ่มต้นแอป
+def main():
+    st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ - Google Drive")
+    st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_path = os.path.join(backup_dir, f"manual_backup_{timestamp}.db")
+    # ซิงค์กับ Google Drive
+    if st.sidebar.button("🔄 ซิงค์กับ Google Drive"):
+        with st.spinner("กำลังซิงค์ข้อมูล..."):
+            sync_with_drive()
     
-    try:
-        shutil.copy2(DB_PATH, backup_path)
-        st.session_state.last_backup_time = datetime.now()
-        return f"✅ Manual backup created: {os.path.basename(backup_path)}"
-    except Exception as e:
-        return f"❌ Manual backup failed: {str(e)}"
-
-def restore_backup(backup_file):
-    """กู้คืนข้อมูลจาก backup"""
-    try:
-        # สำรองข้อมูลปัจจุบันก่อนกู้คืน
-        current_backup = auto_backup()
-        
-        # กู้คืนจากไฟล์ backup
-        shutil.copy2(backup_file, DB_PATH)
-        
-        if current_backup:
-            return f"✅ Restored from backup. Pre-restore backup: {os.path.basename(current_backup)}"
-        else:
-            return "✅ Restored from backup"
-    except Exception as e:
-        return f"❌ Restore failed: {str(e)}"
-
-def delete_backup_file(backup_path):
-    """ลบไฟล์ backup ที่เลือก"""
-    try:
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
-            return True
-        return False
-    except Exception as e:
-        st.error(f"❌ ไม่สามารถลบไฟล์ได้: {str(e)}")
-        return False
-
-# เริ่มต้นฐานข้อมูล
-init_database()
-
-# เริ่มต้น session state
-if 'show_export_password' not in st.session_state:
-    st.session_state.show_export_password = False
-if 'show_clear_password' not in st.session_state:
-    st.session_state.show_clear_password = False
-if 'export_page' not in st.session_state:
-    st.session_state.export_page = 0
-if 'show_backup_section' not in st.session_state:
-    st.session_state.show_backup_section = False
-if 'last_backup_time' not in st.session_state:
-    st.session_state.last_backup_time = None
-if 'backup_page' not in st.session_state:
-    st.session_state.backup_page = 0
-
-# ดึงสถิติ backup
-backup_files, total_backup_size = get_backup_stats()
-
-# UI
-st.title("📱 โปรแกรมเช็คเบอร์โทรซ้ำ")
-st.markdown("อัพโหลดไฟล์ Excel เพื่อตรวจสอบเบอร์โทรซ้ำโดยใช้**ตัวเลข 9 ตัวท้าย**")
-
-# แสดงข้อมูลเกี่ยวกับที่เก็บข้อมูล
-st.sidebar.markdown(f"**📍 ที่เก็บข้อมูล:** `{os.path.abspath(DATA_DIR)}`")
-
-# Sidebar สำหรับสถิติและการจัดการ
-with st.sidebar:
-    st.header("📊 สถิติ")
-    total_count, valid_count = get_database_stats()
-    st.metric("เบอร์โทรทั้งหมดในระบบ", f"{total_count:,}")
-    st.metric("เบอร์ที่ตรวจสอบได้ (9 ตัว)", f"{valid_count:,}")
-    
-    # แสดงข้อมูลไฟล์ฐานข้อมูล
-    if os.path.exists(DB_PATH):
-        file_size = os.path.getsize(DB_PATH)
-        file_time = datetime.fromtimestamp(os.path.getmtime(DB_PATH))
-        st.sidebar.markdown(f"**📁 ขนาดไฟล์:** {format_file_size(file_size)}")
+    # แสดงสถานะ
+    if os.path.exists("phone_database.db"):
+        file_size = os.path.getsize("phone_database.db")
+        file_time = datetime.fromtimestamp(os.path.getmtime("phone_database.db"))
+        st.sidebar.markdown(f"**📁 ขนาดไฟล์:** {file_size:,} bytes")
         st.sidebar.markdown(f"**🕒 อัพเดตล่าสุด:** {file_time.strftime('%Y-%m-%d %H:%M')}")
     
-    # แสดงสถิติ backup
-    st.sidebar.markdown(f"**💾 จำนวน Backup:** {len(backup_files)} files")
-    st.sidebar.markdown(f"**📦 ขนาด Backup รวม:** {format_file_size(total_backup_size)}")
+    # สถิติ
+    total_count, valid_count = get_database_stats()
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**📊 สถิติ:**")
+    st.sidebar.markdown(f"เบอร์โทรทั้งหมด: **{total_count:,}**")
+    st.sidebar.markdown(f"เบอร์ที่ตรวจสอบได้: **{valid_count:,}**")
     
-    if st.session_state.last_backup_time:
-        st.sidebar.markdown(f"**🕒 Backup ล่าสุด:** {st.session_state.last_backup_time.strftime('%H:%M:%S')}")
+    # ส่วนหลัก
+    st.markdown("---")
     
-    st.header("📥 ทดสอบระบบ")
+    # อัพโหลดไฟล์ Excel
+    uploaded_file = st.file_uploader(
+        "**เลือกไฟล์ Excel**", 
+        type=['xlsx', 'xls'],
+        help="ไฟล์ Excel ต้องมีคอลัมน์แรกเป็นเบอร์โทร"
+    )
     
-    # ส่วนโหลดเบอร์ทั้งหมด
-    if st.button("📤 เริ่มการทดสอบ", type="primary"):
-        st.session_state.show_export_password = True
-        st.session_state.show_clear_password = False
-        st.session_state.show_backup_section = False
-        st.rerun()
-    
-    if st.session_state.show_export_password:
-        st.subheader("กรุณากรอกรหัสผ่าน")
-        export_password = st.text_input("รหัสผ่าน:", type="password", key="export_pass")
+    if uploaded_file is not None:
+        col1, col2 = st.columns(2)
         
-        if st.button("✅ ยืนยัน", key="confirm_export"):
-            if export_password == PASSWORD:
-                st.session_state.export_authenticated = True
-                st.session_state.show_export_password = False
-                st.rerun()
-            else:
-                st.error("❌ รหัสผ่านไม่ถูกต้อง")
-        
-        if st.button("❌ ยกเลิก", key="cancel_export"):
-            st.session_state.show_export_password = False
-            st.rerun()
-    
-    if st.session_state.get('export_authenticated', False):
-        st.success("✅ รหัสผ่านถูกต้อง")
-        
-        total_phones = get_phones_count()
-        
-        if total_phones == 0:
-            st.info("ℹ️ ยังไม่มีข้อมูลเบอร์โทรในระบบ")
-            st.session_state.export_authenticated = False
-            st.rerun()
-        
-        # แสดงตัวอย่างข้อมูลแบบแบ่งหน้า
-        st.info(f"📋 แสดงตัวอย่างข้อมูล (ทั้งหมด {total_phones:,} เบอร์)")
-        
-        page_size = 100
-        offset = st.session_state.export_page * page_size
-        
-        sample_df = get_phones_batch(limit=page_size, offset=offset)
-        st.dataframe(sample_df, use_container_width=True, height=300)
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
-            if st.button("◀️ ก่อนหน้า", key="prev_page") and st.session_state.export_page > 0:
-                st.session_state.export_page -= 1
-                st.rerun()
+            save_to_db = st.checkbox(
+                "💾 บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล", 
+                value=True,
+                help="บันทึกเบอร์โทรจากไฟล์นี้เพื่อใช้ตรวจสอบซ้ำในครั้งต่อไป"
+            )
+        
         with col2:
-            st.markdown(f"**หน้า {st.session_state.export_page + 1}**")
-        with col3:
-            if st.button("ถัดไป ▶️", key="next_page") and len(sample_df) == page_size:
-                st.session_state.export_page += 1
-                st.rerun()
-        
-        # ดาวน์โหลดไฟล์ทั้งหมด
-        st.markdown("---")
-        st.subheader("💾 ดาวน์โหลดข้อมูลทั้งหมด")
-        
-        # ตัวเลือกการดาวน์โหลด
-        download_option = st.radio(
-            "รูปแบบไฟล์:",
-            ["📄 TXT - เบอร์โทรอย่างเดียว", "📋 TXT - เบอร์โทร-ชื่อไฟล์"],
-            index=1
-        )
-        
-        if st.button("🚀 สร้างไฟล์ดาวน์โหลด", key="generate_download"):
-            with st.spinner('กำลังสร้างไฟล์...'):
-                try:
-                    if download_option == "📄 TXT - เบอร์โทรอย่างเดียว":
-                        txt_content, count = export_phones_simple_txt()
-                        file_type = "text/plain"
-                        file_name = f"phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                        st.success(f"✅ สร้างไฟล์ TXT สำเร็จ ({count} เบอร์)")
+            if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
+                with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
+                    try:
+                        # อ่านไฟล์ Excel
+                        df = pd.read_excel(uploaded_file, dtype=str)
+                        df = df.rename(columns={df.columns[0]: 'A'})
+                        df['A'] = df['A'].astype(str).fillna('')
                         
-                    else:  # TXT - เบอร์โทร-ชื่อไฟล์
-                        txt_content, count = export_phones_txt()
-                        file_type = "text/plain"
-                        file_name = f"phones_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                        st.success(f"✅ สร้างไฟล์ TXT สำเร็จ ({count} เบอร์)")
-                    
-                    # ปุ่มดาวน์โหลด
-                    st.download_button(
-                        label=f"📥 ดาวน์โหลดไฟล์ ({count} เบอร์)",
-                        data=txt_content,
-                        file_name=file_name,
-                        mime=file_type,
-                        type="primary",
-                        use_container_width=True
-                    )
-                    
-                except Exception as e:
-                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
-        
-        if st.button("🔒 ออกจากระบบ", key="logout_export"):
-            st.session_state.export_authenticated = False
-            st.session_state.export_page = 0
-            st.rerun()
-    
-    st.header("⚙️ การจัดการ")
-    
-    # ส่วนสำรองข้อมูล
-    if st.button("💾 สำรองข้อมูล", type="secondary"):
-        st.session_state.show_backup_section = True
-        st.session_state.show_clear_password = False
-        st.session_state.show_export_password = False
-        st.rerun()
-    
-    if st.session_state.show_backup_section:
-        st.subheader("การสำรองและกู้คืนข้อมูล")
-        
-        # สร้าง backup ด้วยตนเอง
-        if st.button("📁 สร้าง Backup ทันที", key="create_backup", type="primary"):
-            with st.spinner('กำลังสร้าง backup...'):
-                result = manual_backup()
-                st.success(result)
-                st.rerun()
-        
-        # แสดงรายการ backup ทั้งหมดแบบแบ่งหน้า
-        if backup_files:
-            st.markdown(f"**📋 รายการ Backup ทั้งหมด ({len(backup_files)} files):**")
-            
-            # แบ่งหน้า
-            backup_page_size = 10
-            total_pages = (len(backup_files) + backup_page_size - 1) // backup_page_size
-            start_idx = st.session_state.backup_page * backup_page_size
-            end_idx = start_idx + backup_page_size
-            
-            current_backups = backup_files[start_idx:end_idx]
-            
-            for i, backup in enumerate(current_backups):
-                col1, col2, col3 = st.columns([3, 2, 1])
-                with col1:
-                    st.write(f"`{backup['name']}`")
-                with col2:
-                    st.caption(f"📏 {backup['size_readable']} | 🕒 {backup['time'].strftime('%Y-%m-%d %H:%M')}")
-                with col3:
-                    if st.button("🗑️", key=f"delete_{i}", help="ลบไฟล์นี้"):
-                        if delete_backup_file(backup['path']):
-                            st.success(f"ลบ {backup['name']} เรียบร้อย")
-                            st.rerun()
-            
-            # ควบคุมหน้า
-            if total_pages > 1:
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col1:
-                    if st.button("◀️ ก่อนหน้า", key="prev_backup_page") and st.session_state.backup_page > 0:
-                        st.session_state.backup_page -= 1
-                        st.rerun()
-                with col2:
-                    st.markdown(f"**หน้า {st.session_state.backup_page + 1} จาก {total_pages}**")
-                with col3:
-                    if st.button("ถัดไป ▶️", key="next_backup_page") and end_idx < len(backup_files):
-                        st.session_state.backup_page += 1
-                        st.rerun()
-        else:
-            st.info("ℹ️ ยังไม่มีไฟล์ backup")
-        
-        # กู้คืนข้อมูล
-        if backup_files:
-            st.markdown("---")
-            st.subheader("🔄 กู้คืนข้อมูล")
-            backup_options = [f"{bf['name']} ({bf['time'].strftime('%Y-%m-%d %H:%M')})" for bf in backup_files]
-            selected_backup = st.selectbox("เลือกไฟล์ที่จะกู้คืน:", backup_options)
-            
-            if st.button("🔄 กู้คืนข้อมูลจาก Backup", type="secondary"):
-                selected_index = backup_options.index(selected_backup)
-                selected_file = backup_files[selected_index]['path']
-                
-                with st.spinner('กำลังกู้คืนข้อมูล...'):
-                    result = restore_backup(selected_file)
-                    st.success(result)
-                    st.rerun()
-        
-        if st.button("❌ ปิด", key="close_backup"):
-            st.session_state.show_backup_section = False
-            st.session_state.backup_page = 0
-            st.rerun()
-    
-    # ส่วนล้างฐานข้อมูล
-    if st.button("🗑️ ล้างฐานข้อมูล", type="secondary"):
-        st.session_state.show_clear_password = True
-        st.session_state.show_export_password = False
-        st.session_state.show_backup_section = False
-        st.rerun()
-    
-    if st.session_state.show_clear_password:
-        st.subheader("กรุณากรอกรหัสผ่าน")
-        clear_password = st.text_input("รหัสผ่าน:", type="password", key="clear_pass")
-        
-        if st.button("✅ ยืนยันการล้าง", key="confirm_clear"):
-            if clear_password == PASSWORD:
-                st.session_state.clear_authenticated = True
-                st.session_state.show_clear_password = False
-                st.rerun()
-            else:
-                st.error("❌ รหัสผ่านไม่ถูกต้อง")
-        
-        if st.button("❌ ยกเลิก", key="cancel_clear"):
-            st.session_state.show_clear_password = False
-            st.rerun()
-    
-    if st.session_state.get('clear_authenticated', False):
-        st.success("✅ รหัสผ่านถูกต้อง")
-        
-        total_count = get_phones_count()
-        
-        if total_count == 0:
-            st.info("ℹ️ ไม่มีข้อมูลในระบบที่จะล้าง")
-            st.session_state.clear_authenticated = False
-            st.rerun()
-        
-        st.warning(f"⚠️  คุณกำลังจะล้างข้อมูลทั้งหมด {total_count:,} เบอร์")
-        st.error("🚨 **คำเตือน:** การล้างข้อมูลไม่สามารถกู้คืนได้!")
-        
-        if st.button("🔥 ยืนยันล้างข้อมูลทั้งหมด", type="primary", key="final_clear"):
-            with st.spinner('กำลังล้างข้อมูล...'):
-                try:
-                    clear_database()
-                    st.success(f"✅ ล้างฐานข้อมูลเรียบร้อย!")
-                    st.session_state.clear_authenticated = False
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
-        
-        if st.button("🔒 ออกจากระบบ", key="logout_clear"):
-            st.session_state.clear_authenticated = False
-            st.rerun()
-
-# ส่วนหลัก
-st.markdown("---")
-
-# อัพโหลดไฟล์
-uploaded_file = st.file_uploader(
-    "**เลือกไฟล์ Excel**", 
-    type=['xlsx', 'xls'],
-    help="ไฟล์ Excel ต้องมีคอลัมน์ A หรือคอลัมน์แรกเป็นเบอร์โทร"
-)
-
-if uploaded_file is not None:
-    # ตั้งค่า options
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        save_to_db = st.checkbox(
-            "💾 บันทึกเบอร์จากไฟล์นี้ลงฐานข้อมูล", 
-            value=True,
-            help="บันทึกเบอร์โทรจากไฟล์นี้เพื่อใช้ตรวจสอบซ้ำในครั้งต่อไป"
-        )
-    
-    with col2:
-        if st.button("🚀 เริ่มตรวจสอบเบอร์โทรซ้ำ", type="primary", use_container_width=True):
-            with st.spinner('กำลังตรวจสอบเบอร์โทรซ้ำ...'):
-                try:
-                    # ใช้ฟังก์ชันอ่านไฟล์แบบรักษา format
-                    df = read_excel_preserve_format(uploaded_file)
-                    
-                    st.info(f"ใช้คอลัมน์ 'A' เป็นคอลัมน์เบอร์โทร (พบ {len(df)} แถว)")
-                    
-                    # ดึงตัวเลข 9 ตัวท้าย
-                    df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
-                    
-                    # ดึงข้อมูลเบอร์เก่าจากฐานข้อมูล
-                    existing_last_9_digits = get_all_last_9_digits()
-                    
-                    # ตรวจสอบซ้ำ
-                    df['is_duplicate'] = df['last_9_digits'].isin(existing_last_9_digits)
-                    
-                    # กรองข้อมูลที่ไม่ซ้ำ
-                    unique_df = df[~df['is_duplicate']].copy()
-                    
-                    # ลบคอลัมน์ชั่วคราว
-                    columns_to_drop = ['last_9_digits', 'is_duplicate']
-                    for col in columns_to_drop:
-                        if col in unique_df.columns:
-                            unique_df = unique_df.drop(columns=[col])
-                    
-                    # บันทึกลงฐานข้อมูลถ้าต้องการ
-                    if save_to_db:
-                        new_records = save_phones_to_database(df['A'].tolist(), uploaded_file.name)
-                        st.success(f"💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย (เพิ่ม {new_records} เบอร์ใหม่)")
-                    
-                    # แสดงผลลัพธ์
-                    st.success("✅ ตรวจสอบเสร็จสิ้น!")
-                    
-                    # สรุปผล
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("เบอร์โทรทั้งหมด", len(df))
-                    with col2:
-                        st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
-                    with col3:
-                        st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
-                    
-                    # ดาวน์โหลดไฟล์ผลลัพธ์
-                    st.markdown("---")
-                    st.subheader("📥 ดาวน์โหลดไฟล์ผลลัพธ์")
-                    
-                    # สร้างชื่อไฟล์ตามต้นฉบับ-Cut
-                    original_name = uploaded_file.name
-                    if '.' in original_name:
+                        st.info(f"ใช้คอลัมน์แรกเป็นคอลัมน์เบอร์โทร (พบ {len(df)} แถว)")
+                        
+                        # ดึงตัวเลข 9 ตัวท้าย
+                        df['last_9_digits'] = df['A'].apply(extract_last_9_digits)
+                        
+                        # ดึงข้อมูลเบอร์เก่าจากฐานข้อมูล
+                        existing_last_9_digits = get_all_last_9_digits()
+                        
+                        # ตรวจสอบซ้ำ
+                        df['is_duplicate'] = df['last_9_digits'].isin(existing_last_9_digits)
+                        
+                        # กรองข้อมูลที่ไม่ซ้ำ
+                        unique_df = df[~df['is_duplicate']].copy()
+                        unique_df = unique_df.drop(columns=['last_9_digits', 'is_duplicate'])
+                        
+                        # บันทึกลงฐานข้อมูล
+                        if save_to_db:
+                            new_records = save_phones_to_database(df['A'].tolist(), uploaded_file.name)
+                            st.success(f"💾 บันทึกเบอร์โทรลงฐานข้อมูลเรียบร้อย (เพิ่ม {new_records} เบอร์ใหม่)")
+                        
+                        # แสดงผลลัพธ์
+                        st.success("✅ ตรวจสอบเสร็จสิ้น!")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("เบอร์โทรทั้งหมด", len(df))
+                        with col2:
+                            st.metric("เบอร์ที่ไม่ซ้ำ", len(unique_df))
+                        with col3:
+                            st.metric("เบอร์ที่ซ้ำ", len(df) - len(unique_df))
+                        
+                        # ดาวน์โหลดไฟล์ผลลัพธ์
+                        output = save_phones_as_excel(unique_df)
+                        
+                        original_name = uploaded_file.name
                         name_without_ext = original_name.rsplit('.', 1)[0]
-                        extension = original_name.rsplit('.', 1)[1]
-                        download_filename = f"{name_without_ext}-Cut.{extension}"
-                    else:
-                        download_filename = f"{original_name}-Cut.xlsx"
-                    
-                    # บันทึกเป็น Excel
-                    output = save_phones_as_excel(unique_df)
-                    
-                    st.download_button(
-                        label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
-                        data=output.getvalue(),
-                        file_name=download_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary",
-                        use_container_width=True
-                    )
-                    
-                    st.success("✅ **ไฟล์ผลลัพธ์จะรักษาเลข 0 หน้าเบอร์โทรโดยอัตโนมัติ**")
-                    
-                    # แสดงตัวอย่างข้อมูล
-                    with st.expander("📋 ดูตัวอย่างข้อมูลผลลัพธ์"):
-                        st.dataframe(unique_df.head(10), use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+                        download_filename = f"{name_without_ext}-Cut.xlsx"
+                        
+                        st.download_button(
+                            label="💾 ดาวน์โหลดไฟล์ผลลัพธ์",
+                            data=output.getvalue(),
+                            file_name=download_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="primary"
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
 
-# ส่วนคำแนะนำ
-with st.expander("💡 คู่มือการใช้งาน"):
-    st.markdown("""
-    """)
+# เริ่มต้นฐานข้อมูล
+if not os.path.exists("phone_database.db"):
+    init_database()
 
-# Footer
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: #666;'>"
-    "พัฒนาด้วย Streamlit | โปรแกรมเช็คเบอร์โทรซ้ำ - ระบบสำรองข้อมูลไม่จำกัด"
-    "</div>",
-    unsafe_allow_html=True
-)
+# รันแอป
+if __name__ == "__main__":
+    main()
